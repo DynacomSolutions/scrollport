@@ -24,6 +24,7 @@ export type ColumnMeta = {
 export type TableDisplayMode = 'table' | 'card' | 'auto'
 
 type VirtualGridTableProps<TData extends object> = {
+  tableId: string
   data: TData[]
   columns: ColumnDef<TData>[]
   getRowId?: (originalRow: TData, index: number, parent?: Row<TData>) => string
@@ -42,11 +43,12 @@ type VirtualGridTableProps<TData extends object> = {
 }
 
 export function VirtualGridTable<TData extends object>({
+  tableId,
   data,
   columns,
   getRowId,
   getSubRows,
-  storageKey = 'virtual-grid-table-column-sizing-v1',
+  storageKey,
   rowHeight = 46,
   edgeGutter = 0,
   isSubheaderRow,
@@ -58,7 +60,23 @@ export function VirtualGridTable<TData extends object>({
   onSortingChange,
   autoScrollX = 'off',
 }: VirtualGridTableProps<TData>) {
-  const [expanded, setExpanded] = useState<ExpandedState>({})
+  const effectiveStorageKey = storageKey ?? `table.${tableId}.column-sizing`
+  const expandedStorageKey = `table.${tableId}.expanded`
+  const [expanded, setExpanded] = useState<ExpandedState>(() => {
+    try {
+      const raw = window.localStorage.getItem(expandedStorageKey)
+      if (!raw) {
+        return {}
+      }
+      const parsed = JSON.parse(raw)
+      if (parsed === true) {
+        return true
+      }
+      return typeof parsed === 'object' && parsed !== null ? (parsed as ExpandedState) : {}
+    } catch {
+      return {}
+    }
+  })
   const [scrollLeft, setScrollLeft] = useState(0)
   const [scrollTop, setScrollTop] = useState(0)
   const [hoveredResizeColumnId, setHoveredResizeColumnId] = useState<string | null>(null)
@@ -67,7 +85,7 @@ export function VirtualGridTable<TData extends object>({
   const [sorting, setSorting] = useState<SortingState>([])
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>(() => {
     try {
-      const raw = window.localStorage.getItem(storageKey)
+      const raw = window.localStorage.getItem(effectiveStorageKey)
       if (!raw) {
         return {}
       }
@@ -121,8 +139,12 @@ export function VirtualGridTable<TData extends object>({
   })
 
   useEffect(() => {
-    window.localStorage.setItem(storageKey, JSON.stringify(columnSizing))
-  }, [columnSizing, storageKey])
+    window.localStorage.setItem(effectiveStorageKey, JSON.stringify(columnSizing))
+  }, [columnSizing, effectiveStorageKey])
+
+  useEffect(() => {
+    window.localStorage.setItem(expandedStorageKey, JSON.stringify(expanded))
+  }, [expanded, expandedStorageKey])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

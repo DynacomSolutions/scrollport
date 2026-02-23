@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
 import type { ColumnDef, SortingState } from '@tanstack/react-table'
 import { generateData, type UserRecord } from './data'
 import {
@@ -72,6 +72,7 @@ const NUMERIC_COLUMNS: NumericColumnKey[] = [
 ]
 
 const CURRENCY_COLUMNS: NumericColumnKey[] = ['revenue', 'balance', 'mrr', 'arr', 'expense']
+const TABLE_ID = 'users'
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
   year: 'numeric',
@@ -86,6 +87,7 @@ const dateTimeFormatter = new Intl.DateTimeFormat('en-US', {
   hour: '2-digit',
   minute: '2-digit',
 })
+const integerFormatter = new Intl.NumberFormat('en-US')
 
 function formatDate(value: string) {
   return dateFormatter.format(new Date(value))
@@ -210,25 +212,34 @@ function labelFromColumnId(columnId: string): string {
     .trim()
 }
 
-function parseSearchStateFromUrl(): OmniSearchState {
+function parseSearchStateFromUrl(tableId: string): OmniSearchState {
   const params = new URLSearchParams(window.location.search)
-  const fromSearch = (params.get('search') ?? '').trim()
+  const fromSearch = (params.get(`${tableId}.search`) ?? '').trim()
 
-  const pills: OmniSearchPill[] = Array.from(params.entries())
-    .filter(([key]) => FILTER_PARAM_KEYS.has(key))
-    .map(([columnId, rawValue]) => {
-      const values = rawValue
-        .split(',')
-        .map((item) => item.trim())
-        .filter(Boolean)
-      return {
-        columnId,
-        label: labelFromColumnId(columnId),
-        value: values.join(' OR '),
-        values: values.length > 1 ? values : undefined,
-      } satisfies OmniSearchPill
+  const pills = Array.from(params.entries()).reduce<OmniSearchPill[]>((acc, [key, rawValue]) => {
+    if (!key.startsWith(`${tableId}.`)) {
+      return acc
+    }
+    const columnId = key.slice(`${tableId}.`.length)
+    if (!FILTER_PARAM_KEYS.has(columnId)) {
+      return acc
+    }
+    const values = rawValue
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+    const value = values.join(' OR ')
+    if (!value) {
+      return acc
+    }
+    acc.push({
+      columnId,
+      label: labelFromColumnId(columnId),
+      value,
+      values: values.length > 1 ? values : undefined,
     })
-    .filter((pill) => pill.value.length > 0)
+    return acc
+  }, [])
 
   if (fromSearch && !pills.some((pill) => pill.columnId === RAW_SEARCH_PILL_ID)) {
     return {
@@ -243,9 +254,9 @@ function parseSearchStateFromUrl(): OmniSearchState {
   }
 }
 
-function parseSortingStateFromUrl(): SortingState {
+function parseSortingStateFromUrl(tableId: string): SortingState {
   const params = new URLSearchParams(window.location.search)
-  const sortParam = (params.get('sort') ?? '').trim()
+  const sortParam = (params.get(`${tableId}.sort`) ?? '').trim()
   if (!sortParam) {
     return []
   }
@@ -267,24 +278,38 @@ function parseSortingStateFromUrl(): SortingState {
     .filter((entry): entry is SortingState[number] => entry !== null)
 }
 
-function parseAutoScrollXFromUrl(): 'left' | 'right' | 'off' {
+function parseAutoScrollXFromUrl(tableId: string): 'left' | 'right' | 'off' {
   const params = new URLSearchParams(window.location.search)
-  const value = (params.get('xScroll') ?? '').trim().toLowerCase()
+  const value = (params.get(`${tableId}.xScroll`) ?? '').trim().toLowerCase()
   if (value === 'left' || value === 'right') {
     return value
   }
   return 'off'
 }
 
-function writeSearchStateToUrl(state: OmniSearchState, sorting: SortingState, autoScrollX: 'left' | 'right' | 'off') {
+function parseDisplayModeFromStorage(tableId: string): TableDisplayMode {
+  const raw = window.localStorage.getItem(`table.${tableId}.displayMode`)
+  if (raw === 'auto' || raw === 'table' || raw === 'card') {
+    return raw
+  }
+  return 'auto'
+}
+
+function parseAutoScrollXFromStorage(tableId: string): 'left' | 'right' | 'off' {
+  const raw = window.localStorage.getItem(`table.${tableId}.xScroll`)
+  if (raw === 'left' || raw === 'right' || raw === 'off') {
+    return raw
+  }
+  return 'off'
+}
+
+function writeSearchStateToUrl(tableId: string, state: OmniSearchState, sorting: SortingState, autoScrollX: 'left' | 'right' | 'off') {
   const params = new URLSearchParams(window.location.search)
-  params.delete('search')
-  params.delete('q')
-  params.delete('filters')
-  params.delete('sort')
-  params.delete('xScroll')
+  params.delete(`${tableId}.search`)
+  params.delete(`${tableId}.sort`)
+  params.delete(`${tableId}.xScroll`)
   for (const key of FILTER_PARAM_KEYS) {
-    params.delete(key)
+    params.delete(`${tableId}.${key}`)
   }
 
   const rawPills = state.pills.filter((pill) => pill.columnId === RAW_SEARCH_PILL_ID)
@@ -292,7 +317,7 @@ function writeSearchStateToUrl(state: OmniSearchState, sorting: SortingState, au
   const rawQuery = rawPills[rawPills.length - 1]?.value.trim() ?? ''
 
   if (rawQuery) {
-    params.set('search', rawQuery)
+    params.set(`${tableId}.search`, rawQuery)
   }
 
   for (const pill of otherPills) {
@@ -303,18 +328,18 @@ function writeSearchStateToUrl(state: OmniSearchState, sorting: SortingState, au
     if (values.length === 0) {
       continue
     }
-    params.set(pill.columnId, values.join(','))
+    params.set(`${tableId}.${pill.columnId}`, values.join(','))
   }
 
   const validSortEntries = sorting
     .filter((entry) => FILTER_PARAM_KEYS.has(entry.id))
     .map((entry) => `${entry.id}:${entry.desc ? 'desc' : 'asc'}`)
   if (validSortEntries.length > 0) {
-    params.set('sort', validSortEntries.join(','))
+    params.set(`${tableId}.sort`, validSortEntries.join(','))
   }
 
   if (autoScrollX !== 'off') {
-    params.set('xScroll', autoScrollX)
+    params.set(`${tableId}.xScroll`, autoScrollX)
   }
 
   const nextQuery = params.toString()
@@ -393,13 +418,17 @@ function toTableRows(records: UserRecord[]): TableRow[] {
 }
 
 function App() {
-  const initialSearchState = useMemo(() => parseSearchStateFromUrl(), [])
-  const initialSortingState = useMemo(() => parseSortingStateFromUrl(), [])
-  const initialAutoScrollX = useMemo(() => parseAutoScrollXFromUrl(), [])
+  const initialSearchState = useMemo(() => parseSearchStateFromUrl(TABLE_ID), [])
+  const initialSortingState = useMemo(() => parseSortingStateFromUrl(TABLE_ID), [])
+  const initialAutoScrollX = useMemo(() => {
+    const fromUrl = parseAutoScrollXFromUrl(TABLE_ID)
+    return fromUrl !== 'off' ? fromUrl : parseAutoScrollXFromStorage(TABLE_ID)
+  }, [])
+  const initialDisplayMode = useMemo(() => parseDisplayModeFromStorage(TABLE_ID), [])
   const [searchState, setSearchState] = useState<OmniSearchState>(initialSearchState)
   const [sorting, setSorting] = useState<SortingState>(initialSortingState)
   const [autoScrollX, setAutoScrollX] = useState<'left' | 'right' | 'off'>(initialAutoScrollX)
-  const [displayMode, setDisplayMode] = useState<TableDisplayMode>('auto')
+  const [displayMode, setDisplayMode] = useState<TableDisplayMode>(initialDisplayMode)
   const baseData = useMemo(() => generateData(10_000), [])
   const rawSearchPill = searchState.pills.find((pill) => pill.columnId === RAW_SEARCH_PILL_ID)
   const rawQuery = rawSearchPill?.value.trim() ?? (searchState.pills.length === 0 ? searchState.globalQuery.trim() : '')
@@ -458,6 +487,10 @@ function App() {
       return fieldPills.every((pill) => matchesPill(row, pill, omniColumns))
     })
   }, [baseData, fieldPills, omniColumns, rawQuery])
+  const usersCountLabel =
+    filteredBaseData.length === baseData.length
+      ? integerFormatter.format(baseData.length)
+      : `${integerFormatter.format(filteredBaseData.length)} / ${integerFormatter.format(baseData.length)}`
 
   const data = useMemo(() => toTableRows(filteredBaseData), [filteredBaseData])
   const departmentIdsWithSubrowMatch = useMemo(() => {
@@ -805,80 +838,89 @@ function App() {
   )
 
   useEffect(() => {
-    writeSearchStateToUrl(searchState, sorting, autoScrollX)
+    writeSearchStateToUrl(TABLE_ID, searchState, sorting, autoScrollX)
   }, [autoScrollX, searchState, sorting])
 
+  useEffect(() => {
+    window.localStorage.setItem(`table.${TABLE_ID}.displayMode`, displayMode)
+  }, [displayMode])
+
+  useEffect(() => {
+    window.localStorage.setItem(`table.${TABLE_ID}.xScroll`, autoScrollX)
+  }, [autoScrollX])
+
+  const displayModeIcon = displayMode === 'table' ? '▦' : displayMode === 'card' ? '▤' : '◌'
+  const xScrollIcon = autoScrollX === 'left' ? '⬅' : autoScrollX === 'right' ? '➡' : '↔'
+  const closeDropdown = (event: MouseEvent<HTMLButtonElement>) => {
+    const details = event.currentTarget.closest('details')
+    if (details) {
+      details.removeAttribute('open')
+    }
+  }
+
   return (
-    <div className="app-shell">
-      <header>
-        <h1>TanStack Table + CSS Grid Virtualization</h1>
-        <p>Department groups with expandable user sub-rows and omnibox filtering.</p>
-      </header>
+    <div className="app-shell users-page">
+      <section className="users-section">
+        <div className="users-toolbar">
+          <h2 className="users-title">Users ({usersCountLabel})</h2>
 
-      <div className="search-toolbar">
-        <div className="view-mode-bar" role="group" aria-label="Table display mode">
-          <button
-            type="button"
-            className={`view-mode-button${displayMode === 'auto' ? ' is-active' : ''}`}
-            onClick={() => setDisplayMode('auto')}
-          >
-            Auto
-          </button>
-          <button
-            type="button"
-            className={`view-mode-button${displayMode === 'table' ? ' is-active' : ''}`}
-            onClick={() => setDisplayMode('table')}
-          >
-            Table
-          </button>
-          <button
-            type="button"
-            className={`view-mode-button${displayMode === 'card' ? ' is-active' : ''}`}
-            onClick={() => setDisplayMode('card')}
-          >
-            Card
-          </button>
-        </div>
-        <OmniSearchBar<UserRecord> columns={omniColumns} onChange={setSearchState} initialState={initialSearchState} />
-        <div className="x-scroll-bar" role="group" aria-label="Horizontal auto scroll">
-          <button
-            type="button"
-            className={`x-scroll-button${autoScrollX === 'left' ? ' is-active' : ''}`}
-            onClick={() => setAutoScrollX('left')}
-          >
-            Left
-          </button>
-          <button
-            type="button"
-            className={`x-scroll-button${autoScrollX === 'off' ? ' is-active' : ''}`}
-            onClick={() => setAutoScrollX('off')}
-          >
-            Off
-          </button>
-          <button
-            type="button"
-            className={`x-scroll-button${autoScrollX === 'right' ? ' is-active' : ''}`}
-            onClick={() => setAutoScrollX('right')}
-          >
-            Right
-          </button>
-        </div>
-      </div>
+          <div className="search-toolbar">
+            <OmniSearchBar<UserRecord> columns={omniColumns} onChange={setSearchState} initialState={initialSearchState} />
+            <div className="toolbar-dropdowns">
+              <details className="icon-dropdown">
+                <summary className="icon-dropdown-trigger" aria-label="Display mode">
+                  <span>{displayModeIcon}</span>
+                </summary>
+                <div className="icon-dropdown-menu" role="menu" aria-label="Display mode options">
+                  <button type="button" onClick={(event) => { setDisplayMode('auto'); closeDropdown(event) }}>
+                    ◌ Auto
+                  </button>
+                  <button type="button" onClick={(event) => { setDisplayMode('table'); closeDropdown(event) }}>
+                    ▦ Table
+                  </button>
+                  <button type="button" onClick={(event) => { setDisplayMode('card'); closeDropdown(event) }}>
+                    ▤ Card
+                  </button>
+                </div>
+              </details>
 
-      <VirtualGridTable<TableRow>
-        data={data}
-        columns={columns}
-        displayMode={displayMode}
-        sorting={sorting}
-        onSortingChange={setSorting}
-        autoScrollX={autoScrollX}
-        getRowId={(row) => row.id}
-        getSubRows={(row) => row.subRows}
-        isSubheaderRow={(row) => row.original.rowType === 'department'}
-        canSubheaderStick={(row) => row.original.rowType === 'department' && row.getIsExpanded()}
-        storageKey="reporting-table-column-sizing-v1"
-        autoExpandedRowIds={autoExpandedRowIds}
-      />
+              <details className="icon-dropdown">
+                <summary className="icon-dropdown-trigger" aria-label="Horizontal auto scroll">
+                  <span>{xScrollIcon}</span>
+                </summary>
+                <div className="icon-dropdown-menu" role="menu" aria-label="Horizontal auto scroll options">
+                  <button type="button" onClick={(event) => { setAutoScrollX('off'); closeDropdown(event) }}>
+                    ↔ Off
+                  </button>
+                  <button type="button" onClick={(event) => { setAutoScrollX('left'); closeDropdown(event) }}>
+                    ⬅ Left
+                  </button>
+                  <button type="button" onClick={(event) => { setAutoScrollX('right'); closeDropdown(event) }}>
+                    ➡ Right
+                  </button>
+                </div>
+              </details>
+            </div>
+          </div>
+        </div>
+
+        <div className="users-table-slot">
+          <VirtualGridTable<TableRow>
+            tableId={TABLE_ID}
+            data={data}
+            columns={columns}
+            displayMode={displayMode}
+            sorting={sorting}
+            onSortingChange={setSorting}
+            autoScrollX={autoScrollX}
+            getRowId={(row) => row.id}
+            getSubRows={(row) => row.subRows}
+            isSubheaderRow={(row) => row.original.rowType === 'department'}
+            canSubheaderStick={(row) => row.original.rowType === 'department' && row.getIsExpanded()}
+            autoExpandedRowIds={autoExpandedRowIds}
+          />
+        </div>
+      </section>
     </div>
   )
 }
