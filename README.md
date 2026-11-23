@@ -2,9 +2,9 @@
 
 Scrollport makes the native browser find bar (Ctrl+F or Cmd+F) work in a virtual list. A grid of 100000 rows draws only the rows in view. The find bar still finds every row, shows the true number of matches, and Enter walks the matches in order while the grid follows.
 
-It has a framework-free core, a React hook and a React grid component. There is no find box of its own: the user keeps the browser find bar.
+It has a framework-free core, a React hook, a React grid component and a native find mode for the TanStack table in this repository. There is no find box of its own: the user keeps the browser find bar.
 
-> The demo grid holds 100000 rows of made-up data. Run `npm run dev`, press Ctrl+F and type `qx7r0099999` (the last row), `qx7r0050000` or `berlin`.
+> Two demos, 100000 rows each. Run `npm run dev`, press Ctrl+F and type `qx7r0099999` (the last row), `qx7r0050000` or `berlin` in the grid demo. Open `?demo=table` for the rich table and search `sophia.ward971` (the last row), `bennett81` (100 matches) or `berlin` (12536 matches).
 
 ## Why native find breaks in virtual lists
 
@@ -69,6 +69,48 @@ find.destroy()
 
 You draw the rows in view. Scrollport adds the text. Draw only backgrounds (no text) in the rows, or the find bar counts a row twice.
 
+### A table with rich cells (`VirtualGridTable`)
+
+`VirtualGridTable` (TanStack table and virtual, avatars, links, pills, sticky columns, grouped rows) has a `nativeFind` prop. Open `?demo=table` for the demo with 100000 rows.
+
+```tsx
+const columns: ColumnDef<User>[] = [
+  {
+    accessorKey: 'email',
+    header: 'Email',
+    // The text that the cell shows. Without findText the index holds String(row.getValue(columnId)).
+    meta: { findText: (row) => row.original.email } satisfies ColumnMeta<User>,
+    // The cell draws its text with IndexedText: inert text that the find bar skips.
+    cell: ({ row }) => <IndexedText text={row.original.email} />,
+  },
+]
+
+<VirtualGridTable data={users} columns={columns} nativeFind />
+```
+
+How it works:
+
+- The row text is **one line per row of the row model**, in the order that the table shows it: after sorting, filtering and expanding. A tree table indexes the group row and its expanded sub rows. Collapsed rows are not in the index.
+- The cells of a line are **placed at the column edges** with tab characters. The index font is monospace, so the width of a text is known. The line of a row therefore puts every cell within half a tab stop (10 px) of the real cell. Right aligned (numeric) columns align to the right edge.
+- The index text is **transparent** and lies over the real cells. The real cells draw their text with `IndexedText`: the text is in the page but `inert`, so the find bar does not count it. Without this, each row in view would match twice.
+- A find hit opens its chunk and the browser scrolls the table (down and across) to the match. The browser highlight of the match is then painted over the real cell, with the matched characters in the text colour.
+- The index is built again when the rows change (sort, filter, expand, new data) or a column changes size. Cell texts are kept per row, so a sort or a filter only joins them again.
+- `nativeFind` gives every column the width of its `size`. A flexible column (`1fr`) would move the cells away from the index. A table that is narrower than its columns total leaves the free space empty on the right.
+
+Cost of the demo (100000 users, 25 columns, 100007 rows with the group rows), measured in Chromium 157 on a Linux host (16 cores) at two loads:
+
+| What | Value |
+|---|---|
+| Index text in the page | 39.1 MB in 1001 chunks (the 6 column grid demo: about 4 MB) |
+| First build, with the formatting of all cells | 3.3 to 4.5 s at a host load average of 60. 13.8 s at a load average of 300 |
+| Build again after a sort, a collapse or an expand | 1.3 to 1.8 s (2 to 4 s from the click to the new index) |
+| JS heap, fresh browser | 0.7 GB after the load. Each build again adds about 0.3 GB until the next garbage collection (0.9 GB after one) |
+| Memory, all processes of the browser | 2.2 GB in a fresh browser. A renderer that loaded the page 3 times reached 6 to 8 GB |
+
+The build runs on the main thread. During a build the page does not respond. Changing the data while the find bar is open ends the current find: the old chunks leave the page.
+
+`VirtualGridTable` props for this: `nativeFind`, `onFind(find | null)` (the core object, for tests and tools) and `defaultExpanded` (start with every group row expanded). `ColumnMeta.findText(row)` gives the text of a cell.
+
 ## API
 
 ### `createNativeFind(options): NativeFind` (`core.ts`)
@@ -79,18 +121,28 @@ You draw the rows in view. Scrollport adds the text. Draw only backgrounds (no t
 | `host` | `HTMLElement` | Child of the scroller with `position: relative` and a height of `rowCount * rowHeight`. The index goes here. |
 | `rowCount` | `number` | Number of rows. |
 | `rowHeight` | `number` | Row height in px. The index uses it as its line height. |
-| `getRowText` | `(row) => string` | Text of one row. Separate the cells with a tab. Line breaks become spaces. |
+| `getRowText` | `(row) => string` | Text of one row. Separate the cells with a tab. Line breaks become spaces. Use this (a visible index) or `getRowCells` with `columns`. |
+| `getRowCells` | `(row) => string[]` | Text of the cells of one row, for a transparent index over rows that draw their own text. Tabs and line breaks in a cell become spaces. |
+| `columns` | `{ start, end, align? }[]` | Text area of each column in px from the left edge of the host. `align: 'end'` for right aligned cells. Needed with `getRowCells`. |
+| `rowTop` | `number` | Distance from the top of the host to row 0, for example a sticky header. Default 0. |
+| `tabQuantum` | `number` | Distance between tab stops of the transparent index in px. Smaller is more exact and costs more text. Default 20. |
+| `charWidth` | `number` | Width of one index character in px. Measured when not set. |
+| `zIndex` | `number` | `z-index` of the transparent index. It must be above the cells and below a sticky header. Default 1. |
 | `rowsPerChunk` | `number` | Default 100. |
 | `sparseMaxChunks` | `number` | Most chunks that a query may touch to switch to sparse mode. Default 100. |
 | `tabSize` | `number` | Column width in px. Default 120. |
 | `indent` | `number` | Left padding of the text in px. Default 8. |
 | `onActiveRow` | `(row) => void` | The browser moved the selection onto a row. Firefox does this for the find match. Chrome does not. |
 
-The returned object has `mode` (`'full'` or `'sparse'`), `query` (the find text, only in Firefox), `chunkCount`, `attachedChunks`, `reset()`, `audit(query)` and `destroy()`. `audit` counts what native find can match for a query and compares it with the data. The tests use it.
+The returned object has `mode` (`'full'` or `'sparse'`), `query` (the find text, only in Firefox), `chunkCount`, `textLength` (characters of index text), `buildMs`, `attachedChunks`, `reset()`, `audit(query)` and `destroy()`. `audit` counts what native find can match for a query and compares it with the data. The tests use it.
 
-The module also exports the pure helpers `chunkCount`, `chunkOfRow`, `rowsOfChunk`, `rowAtOffset`, `chunksOfQuery` and `cleanLine`.
+The module also exports the pure helpers `chunkCount`, `chunkOfRow`, `rowsOfChunk`, `rowAtOffset`, `chunksOfQuery`, `cleanLine`, `cleanCell` and `alignCells` (the line of a transparent index).
 
-### `useNativeFind(options)` and `NativeFindGrid` (`react.tsx`)
+### `useFindIndex`, `IndexedText`, `useNativeFind` and `NativeFindGrid` (`react.tsx`)
+
+`useFindIndex(scrollerRef, hostRef, options)` builds the index inside a scroller and a host that you render, and builds it again when `rowCount`, an accessor or `columns` change. It takes the options of the core (without the elements) plus `enabled`, `activeRowMs` and `onFind`. Pass stable functions and a stable `columns` array. `VirtualGridTable` uses it.
+
+`IndexedText({ text, as?, className? })` draws inert text that the find bar skips. Use it for all text in the cells of a table with a transparent index.
 
 `useNativeFind` takes the same options (without `scroller`, `host` and `onActiveRow`) plus `activeRowMs` and `onFind`. It returns `scrollerRef`, `hostRef`, the rows to draw (`first`, `end`) and `activeRow`. Pass a stable `getRowText`: the index is built again when it changes.
 
@@ -117,12 +169,16 @@ Safari, macOS and mobile browsers are not tested.
 ## Known limits
 
 - **Firefox, more than 1000 matches.** Firefox shows "More than 1,000 matches". It does not give a total. In about 1 search in 10 on a busy machine the bar shows "1 of 1" instead, while the highlighted row is right. The cause is in Firefox: a new count request ends the older one early. A page cannot switch this off.
+- **Firefox, many fast Enter presses at a wrap.** When the list of matches wraps (the last match, then the first), Firefox sometimes loses an Enter press or restarts its counter ("1 of 1"). The highlighted match is always real: the bar and the row agree. In the 100000 row table, with 33 ms between presses, 7 of 30 searches matched the expected position (Chromium 157: 28 of 30). With 10000 rows it was 12 of 20. With 1000 ms between presses it was 2 of 4. PR 1's own grid shows the same fault with few matches (10 matches: 12 of 16 runs passed on its build, 16 of 16 on this build in the same hour), so it is Firefox behaviour and not table specific. A person who presses Enter slowly is not affected.
 - **Firefox, slow typing.** An earlier test page with the same index failed the "slow typing, then many Enter presses past the end of a short match list" case in 3 of 3 runs. This build passed it in its one run. Treat it as not settled.
+- **Chromium, stall after repeated loads of the 100000 row table.** In one test, a Chromium renderer that had loaded the sorted demo table 3 times (8 GB resident, host load 100 to 300) stopped answering after the search text was typed. The find bar never showed a count, and the thread was inside Chrome's own code (the debugger could not interrupt it). A fresh browser for each run passed. It is not proven whether a normal host shows it.
 - **Chrome, rare faults.** In about 1 search in 14 for a query with one match, the mark can be yellow or the bar can start at `0/1` (1 run in 70 in the last test). A pasted query starts at `2` in about 1 in 70. On Chrome 155 the first Enter walk lost presses in some runs. The cause is not proven. A plain page without Scrollport showed the paste fault too.
-- **It does not scale to millions of rows.** Native find can match only text that is in the DOM. 100000 rows of 6 short columns are about 4 MB of text. In the test page that this code comes from, the browser used 1.1 to 1.7 GB in total (not measured again for this build). The cost grows with rows and columns. A server-backed table cannot use this method: Chrome never tells the page the find text, so a page cannot load the right rows on demand.
-- **Plain text only.** The index holds text. Rich cells (links, avatars) need a second, drawn layer. Draw only backgrounds in the rows, or each row counts twice.
-- **No column headers yet.** The grid draws row backgrounds and the index text. Columns are fixed-width tab stops.
-- **The older table demo does not use it.** `?demo=table` opens the earlier TanStack table demo. It has no native find yet.
+- **It does not scale to millions of rows.** Native find can match only text that is in the DOM. 100000 rows of 6 short columns are about 4 MB of text. The rich table demo (100000 users, 25 columns) is 39 MB of text and about 1 GB of JS heap (see "A table with rich cells"). The cost grows with rows and columns. A server-backed table cannot use this method: Chrome never tells the page the find text, so a page cannot load the right rows on demand.
+- **Plain text only.** The index holds text. In a table the real cells draw links, avatars and pills, and the index lies over them as transparent text. A cell that shows several lines (the user cell: a handle and a name) has one index line, so the highlight lies between the two lines.
+- **Table cell text is inert.** The real cells use `IndexedText`. Inert text cannot be selected with the mouse and assistive technology does not read it. Give the row another accessible name if you need this. Firefox finds text that CSS draws with `::before`, so CSS text does not work as a replacement.
+- **The table index follows the rows of the row model.** Collapsed group rows, rows that are filtered out and card mode (a narrow screen) are not searchable. The index is built again when the rows change.
+- **The highlight lies within half a tab stop (10 px) of the real cell, if the index text fits.** The index width of a text is its length times the width of a monospace character. A very wide character (CJK, emoji) or a text that is wider than its column moves the later cells of that row to the right. The columns must have a fixed width (`nativeFind` sets it). The two sticky columns stick when the table is scrolled across: a match in one of them is highlighted at its place in the scroll, not at the sticky place.
+- **No column headers in `NativeFindGrid`.** The grid draws row backgrounds and the index text. Columns are fixed-width tab stops. (`VirtualGridTable` has headers.)
 - **Not tested:** Safari, macOS, mobile.
 
 The research behind this is in `spike/native-find/FINDINGS.md`.

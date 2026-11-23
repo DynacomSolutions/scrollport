@@ -2,39 +2,11 @@ import { useCallback, useRef } from 'react'
 import { NativeFindGrid } from '../scrollport/react'
 import type { NativeFind } from '../scrollport/core'
 import { COLUMNS, ROW_COUNT, demoRow } from './rows'
+import { publishFindTest } from './findTest'
 import './demo.css'
 
 /** Ids and words that exist in the data. They are not written on the page, so the page adds no match to a query. */
 const EXAMPLES = ['qx7r0099999', 'qx7r0050000', 'qx7r00500', 'berlin', 'qx7r']
-
-/** For tests and tools: the audit and the state of the core. */
-function publish(find: NativeFind | null) {
-  const w = window as unknown as { findTest?: unknown }
-  w.findTest = find
-    ? {
-        check: find.audit,
-        get layerQuery() {
-          return find.query
-        },
-        get mode() {
-          return find.mode
-        },
-        get attachedChunks() {
-          return find.attachedChunks
-        },
-        chunks: find.chunkCount,
-        // Names that the proof rig of the old test page reads.
-        get prefix() {
-          return find.query
-        },
-        layerComplete: true,
-        get layerRows() {
-          return find.mode === 'full' ? ROW_COUNT : find.attachedChunks * 100
-        },
-        sentinels: 0,
-      }
-    : undefined
-}
 
 export default function NativeFindDemo() {
   const next = useRef(0)
@@ -43,6 +15,7 @@ export default function NativeFindDemo() {
     void navigator.clipboard?.writeText(text)
   }
   const getRow = useCallback((i: number) => demoRow(i), [])
+  const publish = useCallback((find: NativeFind | null) => publishFindTest(find, ROW_COUNT), [])
   return (
     <main className="demo">
       <h1>Scrollport demo</h1>

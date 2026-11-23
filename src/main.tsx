@@ -1,7 +1,7 @@
 import { StrictMode, Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
 
-// `?demo=table` opens the older TanStack table demo. It does not use native find yet.
+// `?demo=table` opens the rich TanStack table demo (VirtualGridTable with native find).
 // Each demo loads its own styles, so the two never mix.
 const Demo = lazy(() => (new URLSearchParams(window.location.search).get('demo') === 'table' ? import('./App') : import('./demo/NativeFindDemo')))
 

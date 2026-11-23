@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import {
   flexRender,
   getCoreRowModel,
@@ -13,13 +13,23 @@ import {
   type SortingState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import type { NativeFind, NativeFindColumn } from '../scrollport/core'
+import { useFindIndex } from '../scrollport/react'
 
-export type ColumnMeta = {
+export type ColumnMeta<TData extends object = object> = {
   fixed?: boolean
   minPx?: number
   numeric?: boolean
   sticky?: boolean
+  /**
+   * The text that the cell shows, for native find. Needed for a cell that draws more than the plain value (a formatted
+   * number, a name with a handle). Without it the index holds `String(row.getValue(columnId))`.
+   */
+  findText?: (row: Row<TData>) => string
 }
+
+/** Horizontal padding of a cell in rem (the `.td` rule in `styles.css`). */
+const CELL_PADDING_REM = 1.25
 
 export type TableDisplayMode = 'table' | 'card' | 'auto'
 
@@ -40,6 +50,17 @@ type VirtualGridTableProps<TData extends object> = {
   sorting?: SortingState
   onSortingChange?: OnChangeFn<SortingState>
   autoScrollX?: 'left' | 'right' | 'off'
+  /**
+   * Native find: the browser find bar (Ctrl+F) finds text in every row of the table, also in rows that are not drawn.
+   * Needs two things from the cells: draw their text with `IndexedText` (inert text, which the find bar does not see), and give
+   * `meta.findText` to every column whose cell shows more than the plain value. Works in table mode, not in card mode.
+   * With this on, columns have the width of their `size` (no flexible columns), so the index lies over the real cells.
+   */
+  nativeFind?: boolean
+  /** Called with the find index when it is ready and with `null` when it is gone. Pass a stable function. */
+  onFind?: (find: NativeFind | null) => void
+  /** Start with every group row expanded when the user has no saved state. */
+  defaultExpanded?: boolean
 }
 
 export function VirtualGridTable<TData extends object>({
@@ -59,6 +80,9 @@ export function VirtualGridTable<TData extends object>({
   sorting: controlledSorting,
   onSortingChange,
   autoScrollX = 'off',
+  nativeFind = false,
+  onFind,
+  defaultExpanded = false,
 }: VirtualGridTableProps<TData>) {
   const effectiveStorageKey = storageKey ?? `table.${tableId}.column-sizing`
   const expandedStorageKey = `table.${tableId}.expanded`
@@ -66,7 +90,7 @@ export function VirtualGridTable<TData extends object>({
     try {
       const raw = window.localStorage.getItem(expandedStorageKey)
       if (!raw) {
-        return {}
+        return defaultExpanded ? true : {}
       }
       const parsed = JSON.parse(raw)
       if (parsed === true) {
@@ -97,6 +121,7 @@ export function VirtualGridTable<TData extends object>({
   })
 
   const tableContainerRef = useRef<HTMLDivElement>(null)
+  const tableInnerRef = useRef<HTMLDivElement>(null)
   const hasAppliedInitialAutoScrollRef = useRef(false)
   const [isMobileViewport, setIsMobileViewport] = useState(() => window.matchMedia(`(max-width: ${mobileBreakpoint}px)`).matches)
   const effectiveSorting = controlledSorting ?? sorting
@@ -240,6 +265,53 @@ export function VirtualGridTable<TData extends object>({
     estimateSize: () => rowHeight,
     overscan: 12,
   })
+
+  // Native find. The index holds the text of every row of the row model, in the order that the table shows it. It is
+  // built again when the rows change (sort, filter, expand, new data) or a column changes size.
+  const findEnabled = nativeFind && resolvedDisplayMode === 'table'
+  const findColumns = useMemo<NativeFindColumn[]>(() => {
+    const padding = CELL_PADDING_REM * (parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16)
+    let left = edgeGutter
+    return visibleColumns.map((column) => {
+      const size = column.getSize()
+      const meta = (column.columnDef.meta ?? {}) as ColumnMeta<TData>
+      const out: NativeFindColumn = { start: left + padding, end: left + size - padding, align: meta.numeric ? 'end' : 'start' }
+      left += size
+      return out
+    })
+    // `columnSizing` is the state behind `column.getSize()`
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleColumns, columnSizing, edgeGutter])
+  // The cell texts of a row do not change when the rows move, so they are kept per row (a sort or a filter reuses them).
+  // They do change when a column definition or the visible columns change.
+  const findCellCache = useMemo(() => new WeakMap<object, readonly string[]>(), [columns, visibleColumns])
+  const getRowCells = useCallback(
+    (index: number): readonly string[] => {
+      const row = rows[index]
+      let cells = findCellCache.get(row.original)
+      if (!cells) {
+        cells = visibleColumns.map((column) => {
+          const meta = (column.columnDef.meta ?? {}) as ColumnMeta<TData>
+          return meta.findText ? meta.findText(row) : String(row.getValue(column.id) ?? '')
+        })
+        findCellCache.set(row.original, cells)
+      }
+      return cells
+    },
+    [rows, visibleColumns, findCellCache],
+  )
+  useFindIndex(tableContainerRef, tableInnerRef, {
+    enabled: findEnabled,
+    rowCount: rows.length,
+    rowHeight,
+    rowTop: table.getHeaderGroups().length * rowHeight,
+    getRowCells,
+    columns: findColumns,
+    // above the cells (`z-index` 24 for sticky cells), below the header (30)
+    zIndex: 26,
+    onFind,
+  })
+
   const cardGroupVirtualizer = useVirtualizer({
     count: sortedGroupRows.length,
     getScrollElement: () => tableContainerRef.current,
@@ -312,7 +384,7 @@ export function VirtualGridTable<TData extends object>({
     const minPx = Math.max(meta.minPx ?? column.columnDef.minSize ?? 90, 70)
     const wasResized = Object.prototype.hasOwnProperty.call(columnSizing, column.id)
 
-    if (meta.fixed || wasResized) {
+    if (meta.fixed || wasResized || nativeFind) {
       return `${size}px`
     }
 
@@ -422,7 +494,7 @@ export function VirtualGridTable<TData extends object>({
 
   return (
     <div className="table-wrap" ref={tableContainerRef}>
-      <div className="table-inner" style={{ width: `max(${totalColWidth + edgeGutter * 2}px, 100%)` }}>
+      <div className="table-inner" ref={tableInnerRef} style={{ width: `max(${totalColWidth + edgeGutter * 2}px, 100%)` }}>
         {table.getHeaderGroups().map((headerGroup) => (
           <div
             key={headerGroup.id}
@@ -567,6 +639,7 @@ export function VirtualGridTable<TData extends object>({
           return (
             <div
               key={row.id}
+              data-row={virtualRow.index}
               className={`grid-row body-row${rowIsSubheader ? ' row-department' : ' row-user'}${
                 isSourceUnderStickyOverlay ? ' source-under-sticky-overlay' : ''
               }${virtualRow.index === rows.length - 1 ? ' is-last-row' : ''}`}
