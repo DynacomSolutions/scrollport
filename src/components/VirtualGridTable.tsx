@@ -13,7 +13,7 @@ import {
   type SortingState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import type { NativeFind, NativeFindColumn } from '../scrollport/core'
+import type { NativeFind, NativeFindCell, NativeFindColumn, NativeFindLine } from '../scrollport/core'
 import { useFindIndex } from '../scrollport/react'
 
 export type ColumnMeta<TData extends object = object> = {
@@ -24,8 +24,16 @@ export type ColumnMeta<TData extends object = object> = {
   /**
    * The text that the cell shows, for native find. Needed for a cell that draws more than the plain value (a formatted
    * number, a name with a handle). Without it the index holds `String(row.getValue(columnId))`.
+   * A cell with several lines (a handle above a name), or a text that does not start at the start of the cell (an indent, a
+   * pill), gives an array of lines (`NativeFindCell`). The column gives `findLines`, or each line gives its own `dx` and `dy`.
    */
-  findText?: (row: Row<TData>) => string
+  findText?: (row: Row<TData>) => NativeFindCell
+  /**
+   * Where the lines of a multi-line cell lie (see `NativeFindColumn.lines`): the distance from the start of the cell text
+   * to the text of the line, and from the centre of the row to the centre of the line. Needed with a `findText` that
+   * gives an array. The index puts each line at that place, so the find highlight lies on the visible line.
+   */
+  findLines?: readonly NativeFindLine[]
 }
 
 /** Horizontal padding of a cell in rem (the `.td` rule in `styles.css`). */
@@ -57,6 +65,11 @@ type VirtualGridTableProps<TData extends object> = {
    * With this on, columns have the width of their `size` (no flexible columns), so the index lies over the real cells.
    */
   nativeFind?: boolean
+  /**
+   * Distance between the tab stops of the native find index in px (default 10). A cell starts within half a tab stop of its true
+   * place. A smaller value is more exact and makes the index text longer (20 px: 39.5 MB, 10 px: 50.2 MB for the demo).
+   */
+  findTabQuantum?: number
   /** Called with the find index when it is ready and with `null` when it is gone. Pass a stable function. */
   onFind?: (find: NativeFind | null) => void
   /** Start with every group row expanded when the user has no saved state. */
@@ -81,6 +94,7 @@ export function VirtualGridTable<TData extends object>({
   onSortingChange,
   autoScrollX = 'off',
   nativeFind = false,
+  findTabQuantum = 10,
   onFind,
   defaultExpanded = false,
 }: VirtualGridTableProps<TData>) {
@@ -275,7 +289,7 @@ export function VirtualGridTable<TData extends object>({
     return visibleColumns.map((column) => {
       const size = column.getSize()
       const meta = (column.columnDef.meta ?? {}) as ColumnMeta<TData>
-      const out: NativeFindColumn = { start: left + padding, end: left + size - padding, align: meta.numeric ? 'end' : 'start' }
+      const out: NativeFindColumn = { start: left + padding, end: left + size - padding, align: meta.numeric ? 'end' : 'start', lines: meta.findLines }
       left += size
       return out
     })
@@ -284,9 +298,9 @@ export function VirtualGridTable<TData extends object>({
   }, [visibleColumns, columnSizing, edgeGutter])
   // The cell texts of a row do not change when the rows move, so they are kept per row (a sort or a filter reuses them).
   // They do change when a column definition or the visible columns change.
-  const findCellCache = useMemo(() => new WeakMap<object, readonly string[]>(), [columns, visibleColumns])
+  const findCellCache = useMemo(() => new WeakMap<object, readonly NativeFindCell[]>(), [columns, visibleColumns])
   const getRowCells = useCallback(
-    (index: number): readonly string[] => {
+    (index: number): readonly NativeFindCell[] => {
       const row = rows[index]
       let cells = findCellCache.get(row.original)
       if (!cells) {
@@ -307,6 +321,7 @@ export function VirtualGridTable<TData extends object>({
     rowTop: table.getHeaderGroups().length * rowHeight,
     getRowCells,
     columns: findColumns,
+    tabQuantum: findTabQuantum,
     // above the cells (`z-index` 24 for sticky cells), below the header (30)
     zIndex: 26,
     onFind,

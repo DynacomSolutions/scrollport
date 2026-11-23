@@ -10,7 +10,7 @@ import {
   type OmniSearchState,
 } from './components/OmniSearchBar'
 import { VirtualGridTable, type ColumnMeta, type TableDisplayMode } from './components/VirtualGridTable'
-import type { NativeFind } from './scrollport/core'
+import type { NativeFind, NativeFindCell, NativeFindLine } from './scrollport/core'
 import { IndexedText } from './scrollport/react'
 import { publishFindTest } from './demo/findTest'
 
@@ -148,6 +148,45 @@ function toText(value: unknown): string {
 
 function includesInsensitive(value: string, query: string): boolean {
   return value.toLowerCase().includes(query.toLowerCase())
+}
+
+/**
+ * The two-line user cell: an avatar, then a handle above a name. The cell and the native find index read these numbers, so
+ * the find highlight lies on the visible line. The cell draws the numbers (inline styles), the index gets them as
+ * `ColumnMeta.findLines`: `dx` from the start of the cell text to the start of the line, `dy` from the centre of the row to
+ * the centre of the line (the two lines together are centred in the row).
+ */
+const USER_CELL = { avatar: 22, gapRem: 0.55, primaryLine: 18, secondaryLine: 14 }
+
+// Offsets of cell texts from the start of the cell, in rem, as the CSS of the demo sets them (`.subrow-indent`, `.pill`).
+const SUBROW_INDENT_REM = 1.15
+const PILL_PADDING_REM = 0.5
+const remPx = (rem: number) => rem * (parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16)
+// The group row: the text starts after the chevron and its gap (15.2 px at a root font size of 16 px, measured in Chromium and Firefox).
+const GROUP_TEXT_DX_REM = 0.95
+
+/** Average width of one character of a sample text in a cell element with `className`, in px. The cell font decides it. */
+function measureCharWidth(className: string, sample: string): number {
+  const cell = document.createElement('div')
+  cell.className = 'td'
+  cell.style.cssText = 'position:absolute;visibility:hidden;display:block;height:auto;padding:0'
+  const line = document.createElement('div')
+  line.className = className
+  line.style.cssText = 'display:inline-block'
+  line.textContent = sample
+  cell.append(line)
+  document.body.append(cell)
+  const width = line.getBoundingClientRect().width / sample.length
+  cell.remove()
+  return width
+}
+
+function userCellFindLines(): NativeFindLine[] {
+  const dx = USER_CELL.avatar + remPx(USER_CELL.gapRem)
+  return [
+    { dx, dy: -USER_CELL.secondaryLine / 2, charWidth: measureCharWidth('user-primary', '@amelia.bailey108') },
+    { dx, dy: USER_CELL.primaryLine / 2, charWidth: measureCharWidth('user-secondary', 'Amelia Bailey') },
+  ]
 }
 
 function highlightText(text: string, query: string): ReactNode {
@@ -609,6 +648,8 @@ function App() {
       minSize: number
       meta?: Partial<ColumnMeta<TableRow>>
       text: (row: TableRow) => string
+      /** The text for native find when the cell shows several lines: one string per visible line. Default: `text`. */
+      lines?: (row: TableRow) => NativeFindCell
       cell?: (row: Row<TableRow>, text: string) => ReactNode
     }
     const summary = (label: string) => <IndexedText className="summary-label" text={label} />
@@ -623,6 +664,8 @@ function App() {
         minSize: 220,
         meta: { fixed: true, minPx: 220, sticky: true },
         text: (row) => (row.rowType === 'department' ? `${row.department} ${row.userCount} users` : row.department),
+        // the text of a sub row starts after an indent, the text of a group row after the chevron
+        lines: (row) => [{ text: row.rowType === 'department' ? `${row.department} ${row.userCount} users` : row.department, dx: row.rowType === 'department' ? remPx(GROUP_TEXT_DX_REM) : remPx(SUBROW_INDENT_REM) }],
         cell: (row) =>
           isGroup(row) ? (
             <button className="group-toggle" type="button" onClick={row.getToggleExpandedHandler()}>
@@ -648,17 +691,23 @@ function App() {
         header: 'User',
         size: 260,
         minSize: 220,
-        meta: { fixed: true, minPx: 220, sticky: true },
+        // Two lines: the handle above the name. The index puts each line on the visible line (see USER_CELL).
+        meta: { fixed: true, minPx: 220, sticky: true, findLines: userCellFindLines() },
         text: (row) => (row.rowType === 'department' ? 'Department Summary' : `@${row.username} ${row.fullName}`),
+        lines: (row) => (row.rowType === 'department' ? 'Department Summary' : [`@${row.username}`, row.fullName]),
         cell: (row) =>
           isGroup(row) ? (
             summary('Department Summary')
           ) : (
-            <div className="user-cell">
-              <img src={row.original.avatarUrl} alt="" loading="lazy" />
+            <div className="user-cell" style={{ gap: `${USER_CELL.gapRem}rem` }}>
+              <img src={row.original.avatarUrl} alt="" loading="lazy" style={{ width: USER_CELL.avatar, height: USER_CELL.avatar }} />
               <div>
-                <div className="user-primary">{highlightText(`@${row.original.username}`, rawQuery)}</div>
-                <div className="user-secondary">{highlightText(row.original.fullName, rawQuery)}</div>
+                <div className="user-primary" style={{ lineHeight: `${USER_CELL.primaryLine}px` }}>
+                  {highlightText(`@${row.original.username}`, rawQuery)}
+                </div>
+                <div className="user-secondary" style={{ lineHeight: `${USER_CELL.secondaryLine}px` }}>
+                  {highlightText(row.original.fullName, rawQuery)}
+                </div>
               </div>
             </div>
           ),
@@ -674,6 +723,7 @@ function App() {
         minSize: 120,
         meta: { minPx: 120 },
         text: (row) => (row.rowType === 'department' ? 'Mixed' : row.status),
+        lines: (row) => (row.rowType === 'department' ? 'Mixed' : [{ text: row.status, dx: remPx(PILL_PADDING_REM) }]), // the pill pads its text
         cell: (row, text) =>
           isGroup(row) ? (
             summary('Mixed')
@@ -688,6 +738,7 @@ function App() {
         minSize: 120,
         meta: { minPx: 120 },
         text: (row) => (row.rowType === 'department' ? 'Mixed' : row.plan),
+        lines: (row) => (row.rowType === 'department' ? 'Mixed' : [{ text: row.plan, dx: remPx(PILL_PADDING_REM) }]),
         cell: (row, text) =>
           isGroup(row) ? summary('Mixed') : <span className="pill pill-plan">{highlightText(text, rawQuery)}</span>,
       },
@@ -771,7 +822,7 @@ function App() {
       header: spec.header,
       minSize: spec.minSize,
       size: spec.size,
-      meta: { ...spec.meta, findText: (row: Row<TableRow>) => spec.text(row.original) } satisfies ColumnMeta<TableRow>,
+      meta: { ...spec.meta, findText: (row: Row<TableRow>) => (spec.lines ? spec.lines(row.original) : spec.text(row.original)) } satisfies ColumnMeta<TableRow>,
       cell: ({ row }) => (spec.cell ? spec.cell(row, spec.text(row.original)) : highlightText(spec.text(row.original), rawQuery)),
     }))
   }, [currencyFormatters, numberFormatters, rawQuery])
