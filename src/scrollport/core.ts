@@ -9,19 +9,58 @@
 
 export const DEFAULT_ROWS_PER_CHUNK = 100
 export const DEFAULT_SPARSE_MAX_CHUNKS = 100
+export const DEFAULT_TAB_QUANTUM = 20
 
 export type NativeFindMode = 'full' | 'sparse'
 
-export type NativeFindOptions = {
+/** Where the text of a column lies in the host, in px from the left edge of the host. */
+export type NativeFindColumn = {
+  /** Left edge of the text area of the cell. */
+  start: number
+  /** Right edge of the text area of the cell. */
+  end: number
+  /** Where the cell draws its text. Default `'start'`. */
+  align?: 'start' | 'end'
+}
+
+/**
+ * Where the row text comes from.
+ *
+ * - `getRowText`: a visible index. The index text IS the text on screen. Cells are separated by a tab, at equal tab stops.
+ * - `getRowCells` and `columns`: a transparent index over rows that draw their own text. The cells are placed at the
+ *   column positions, so the browser highlight of a match lies over the real cell.
+ */
+export type NativeFindSource =
+  | {
+      /** Text of one row. Separate the cells with a tab. Line breaks become spaces. */
+      getRowText: (row: number) => string
+      getRowCells?: never
+      columns?: never
+    }
+  | {
+      /** Text of the cells of one row, in column order. Tabs and line breaks become spaces. */
+      getRowCells: (row: number) => readonly string[]
+      /** Position of each column. The cell at index `i` uses `columns[i]`. */
+      columns: readonly NativeFindColumn[]
+      getRowText?: never
+    }
+
+export type NativeFindBase = {
   /** The element that scrolls. */
   scroller: HTMLElement
-  /** A child of the scroller with `position: relative` and a height of `rowCount * rowHeight`. The index chunks go here. */
+  /** A child of the scroller with `position: relative`. The index chunks go here. */
   host: HTMLElement
   rowCount: number
   /** Row height in px. The index uses it as its line height, so a match lies on its row. */
   rowHeight: number
-  /** Text of one row. Separate cells with a tab. Line breaks become spaces. */
-  getRowText: (row: number) => string
+  /** Distance in px from the top of the host to the top of row 0 (for example a sticky header above the rows). Default 0. */
+  rowTop?: number
+  /** Width of one character of the transparent index font in px. Measured when not set. Only for `columns`. */
+  charWidth?: number
+  /** Distance between the tab stops of the transparent index in px. Smaller is more exact and costs more text. Default 20. */
+  tabQuantum?: number
+  /** `z-index` of the transparent index. It must lie over the cells that it covers. Default 1. */
+  zIndex?: number
   rowsPerChunk?: number
   /** Most chunks that a query may touch to switch to sparse mode. */
   sparseMaxChunks?: number
@@ -32,6 +71,8 @@ export type NativeFindOptions = {
   /** Called when the browser moves the selection onto a row. Firefox does this for the find match. Chrome does not. */
   onActiveRow?: (row: number) => void
 }
+
+export type NativeFindOptions = NativeFindBase & NativeFindSource
 
 export type NativeFindAudit = {
   expected: number
@@ -50,6 +91,10 @@ export type NativeFind = {
   /** Text of the last find query that the browser gave to the page (Firefox only). Empty in Chrome. */
   readonly query: string
   readonly chunkCount: number
+  /** Characters of index text in the page (all rows, with the tabs of the transparent index). */
+  readonly textLength: number
+  /** Time in ms that the index took to build: row text, chunks and DOM. */
+  readonly buildMs: number
   /** Chunks that are in the DOM now. All of them in full mode, a few in sparse mode. */
   readonly attachedChunks: number
   /** Go back to full mode and forget the query. Escape does the same. */
@@ -73,6 +118,38 @@ export const rowsOfChunk = (chunk: number, rowCount: number, rowsPerChunk: numbe
 
 /** Row text with line breaks removed: the index keeps one line per row. */
 export const cleanLine = (text: string): string => text.replace(/[\r\n]+/g, ' ')
+
+/** Cell text with tabs and line breaks removed: a tab separates the cells in the index. */
+export const cleanCell = (text: string): string => text.replace(/[\t\r\n]+/g, ' ')
+
+const EPS = 1e-6
+
+/**
+ * Index line for a row that draws its own text. The cells are written at the column positions, with tabs between them.
+ * The index font is monospace, so the width of a text is `text.length * charWidth`. A tab moves to the next multiple of
+ * `quantum`, so a cell lies at most half a quantum from its true place, unless the text of the cell before it is too long.
+ * There is always at least one tab between two cells, so a match never spans two cells.
+ */
+export function alignCells(cells: readonly string[], columns: readonly NativeFindColumn[], charWidth: number, quantum: number): string {
+  let out = ''
+  let pos = 0
+  const tab = () => {
+    out += '\t'
+    pos = (Math.floor(pos / quantum + EPS) + 1) * quantum
+  }
+  for (let c = 0; c < cells.length; c++) {
+    const text = cleanCell(cells[c])
+    const col = columns[Math.min(c, columns.length - 1)]
+    const width = text.length * charWidth
+    const want = col ? (col.align === 'end' ? Math.max(col.start, col.end - width) : col.start) : pos
+    const target = Math.round(want / quantum) * quantum
+    if (c > 0) tab()
+    while (pos < target - EPS) tab()
+    out += text
+    pos += width
+  }
+  return out
+}
 
 /** Row that holds a text offset inside a chunk. Count the line breaks before the offset. */
 export function rowAtOffset(chunkText: string, offset: number, firstRow: number): number {
@@ -100,16 +177,39 @@ export function chunksOfQuery(lowerLines: readonly string[], query: string, rows
 
 const CHUNK_ATTR = 'data-sp-chunk'
 
+/** Width of one character of `font` in px. A monospace font has one width for every character. 0 when nothing is drawn (a test DOM). */
+function measureCharWidth(host: HTMLElement, font: string): number {
+  const probe = host.ownerDocument.createElement('span')
+  probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:${font}`
+  probe.textContent = 'M'.repeat(200)
+  host.append(probe)
+  const width = probe.getBoundingClientRect().width / 200
+  probe.remove()
+  return width > 0 ? width : 7
+}
+
 export function createNativeFind(options: NativeFindOptions): NativeFind {
-  const { scroller, host, rowCount, rowHeight, getRowText, onActiveRow } = options
+  const { scroller, host, rowCount, rowHeight, onActiveRow } = options
   const per = options.rowsPerChunk ?? DEFAULT_ROWS_PER_CHUNK
   const sparseMax = options.sparseMaxChunks ?? DEFAULT_SPARSE_MAX_CHUNKS
-  const tabSize = options.tabSize ?? 120
-  const indent = options.indent ?? 8
+  const rowTop = options.rowTop ?? 0
+  const quantum = options.tabQuantum ?? DEFAULT_TAB_QUANTUM
+  const tabSize = options.columns ? quantum : (options.tabSize ?? 120)
+  const indent = options.columns ? 0 : (options.indent ?? 8)
   const doc = host.ownerDocument
   const win = doc.defaultView as Window
+  const startedAt = win.performance.now()
   const count = chunkCount(rowCount, per)
-  const lines = Array.from({ length: rowCount }, (_, i) => cleanLine(getRowText(i)))
+  const font = options.columns ? `12px/${rowHeight}px monospace` : `inherit`
+  const charWidth = options.columns ? (options.charWidth ?? measureCharWidth(host, font)) : 0
+
+  // The cells of a row, as the data holds them (tabs and line breaks removed).
+  const cellsOf = (i: number): string[] =>
+    options.columns ? options.getRowCells(i).map(cleanCell) : cleanLine(options.getRowText(i)).split('\t')
+  // The index line of a row.
+  const lineOf = (i: number): string =>
+    options.columns ? alignCells(options.getRowCells(i), options.columns, charWidth, quantum) : cleanLine(options.getRowText(i))
+  const lines = Array.from({ length: rowCount }, (_, i) => lineOf(i))
   let lower: string[] | null = null // built on the first query that the browser gives us (Firefox only)
 
   // One hidden chunk per `per` rows: one text node, one line per row, a tab between the cells.
@@ -121,13 +221,17 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
     d.setAttribute(CHUNK_ATTR, String(k))
     d.setAttribute('hidden', 'until-found')
     d.style.cssText =
-      `position:absolute;left:0;top:${first * rowHeight}px;margin:0;padding:0 0 0 ${indent}px;white-space:pre;` +
-      `tab-size:${tabSize}px;font:inherit;line-height:${rowHeight}px;color:inherit;pointer-events:none;z-index:1`
+      `position:absolute;left:0;top:${rowTop + first * rowHeight}px;margin:0;padding:0 0 0 ${indent}px;white-space:pre;` +
+      `tab-size:${tabSize}px;font:${font};line-height:${rowHeight}px;pointer-events:none;z-index:${options.zIndex ?? 1};` +
+      (options.columns ? 'color:transparent' : 'color:inherit')
+    if (options.columns) d.setAttribute('data-sp-layer', 'transparent')
     d.textContent = lines.slice(first, end).join('\n')
     chunks.push(d)
     fragment.append(d)
   }
   host.append(fragment)
+  const textLength = lines.reduce((n, l) => n + l.length + 1, 0)
+  const buildMs = win.performance.now() - startedAt
 
   // "full": every chunk is in the page. "sparse": a browser that gives the typed text through the selection (Firefox)
   // lets the page drop the chunks that hold no match, when the query touches few chunks. That keeps the document small.
@@ -147,8 +251,8 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
   function reconcile() {
     if (destroyed) return
     const span = per * rowHeight
-    const a = Math.floor(scroller.scrollTop / span)
-    const b = Math.floor((scroller.scrollTop + scroller.clientHeight) / span)
+    const a = Math.floor((scroller.scrollTop - rowTop) / span)
+    const b = Math.floor((scroller.scrollTop + scroller.clientHeight - rowTop) / span)
     const sel = doc.getSelection()
     const selChunk = sel && sel.anchorNode ? chunkOf(sel.anchorNode) : null
     for (let k = 0; k < count; k++) {
@@ -245,7 +349,7 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
     let expectedOccurrences = 0
     for (let i = 0; i < rowCount; i++) {
       let c = 0
-      for (const cell of cleanLine(getRowText(i)).toLowerCase().split('\t')) c += occurrences(cell)
+      for (const cell of cellsOf(i)) c += occurrences(cell.toLowerCase())
       if (c) {
         expected.set(i, c)
         expectedOccurrences += c
@@ -305,6 +409,8 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
       return query
     },
     chunkCount: count,
+    textLength,
+    buildMs,
     get attachedChunks() {
       return chunks.filter((c) => c.parentNode === host).length
     },

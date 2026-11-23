@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  alignCells,
   chunkCount,
   chunkOfRow,
   chunksOfQuery,
@@ -8,6 +9,8 @@ import {
   rowAtOffset,
   rowsOfChunk,
   type NativeFind,
+  type NativeFindBase,
+  type NativeFindColumn,
 } from './core'
 
 describe('chunk maths', () => {
@@ -39,6 +42,60 @@ describe('chunk maths', () => {
 
   it('removes line breaks from row text', () => {
     expect(cleanLine('a\r\nb\nc')).toBe('a b c')
+  })
+})
+
+/** Where each cell of an index line starts, in px, for a monospace font and tab stops of `q` px. */
+function cellStarts(line: string, cw: number, q: number): number[] {
+  const out: number[] = []
+  let pos = 0
+  let start = -1
+  for (const ch of line) {
+    if (ch === '\t') {
+      start = -1
+      pos = (Math.floor(pos / q + 1e-6) + 1) * q
+    } else {
+      if (start < 0) {
+        start = pos
+        out.push(start)
+      }
+      pos += cw
+    }
+  }
+  return out
+}
+
+describe('alignCells', () => {
+  const cols: NativeFindColumn[] = [
+    { start: 8, end: 108 },
+    { start: 120, end: 300, align: 'end' },
+    { start: 320, end: 400 },
+  ]
+
+  it('puts every cell within half a tab stop of its column edge', () => {
+    const line = alignCells(['ab', 'cd', 'ef'], cols, 8, 20)
+    expect(line.replace(/\t/g, '')).toBe('abcdef')
+    const [a, b, c] = cellStarts(line, 8, 20)
+    expect(Math.abs(a - 8)).toBeLessThanOrEqual(10)
+    expect(Math.abs(b - (300 - 16))).toBeLessThanOrEqual(10) // right aligned: the text ends at the right edge
+    expect(Math.abs(c - 320)).toBeLessThanOrEqual(10)
+  })
+
+  it('keeps at least one tab between cells, also when a text is too long', () => {
+    const line = alignCells(['x'.repeat(40), 'cd', 'ef'], cols, 8, 20)
+    const parts = line.split(/\t+/)
+    expect(parts).toEqual(['x'.repeat(40), 'cd', 'ef'])
+    expect(line).toContain('\t')
+  })
+
+  it('removes tabs and line breaks inside a cell, so a match cannot span two cells', () => {
+    const line = alignCells(['a\tb', 'c\nd'], cols, 8, 20)
+    expect(line.split(/\t+/)).toEqual(['a b', 'c d'])
+  })
+
+  it('writes an empty cell as tabs only', () => {
+    const line = alignCells(['a', '', 'z'], cols, 8, 20)
+    expect(line.split(/\t+/)).toEqual(['a', 'z'])
   })
 })
 
@@ -101,7 +158,7 @@ describe('createNativeFind', () => {
     vi.restoreAllMocks()
   })
 
-  const make = (extra: Partial<Parameters<typeof createNativeFind>[0]> = {}) =>
+  const make = (extra: Partial<NativeFindBase> = {}) =>
     (find = createNativeFind({ scroller, host, rowCount: ROWS, rowHeight: RH, getRowText: text, rowsPerChunk: PER, ...extra }))
 
   it('puts the text of all rows in the DOM, one line per row', () => {
@@ -247,5 +304,105 @@ describe('createNativeFind', () => {
     make({ rowCount: 250 })
     expect(find.chunkCount).toBe(3)
     expect(host.querySelectorAll('[data-sp-chunk]')).toHaveLength(3)
+  })
+
+  describe('columns (transparent index)', () => {
+    const COLS: NativeFindColumn[] = [
+      { start: 8, end: 108 },
+      { start: 140, end: 240, align: 'end' },
+    ]
+    const names = ['ann', 'bob', 'cy']
+    // 1000 rows. The row order is the order that a table shows after a sort or a filter.
+    const cells = (order: readonly number[]) => (i: number) => [`id${order[i]}`, names[order[i] % 3]]
+    const ident = Array.from({ length: ROWS }, (_, i) => i)
+    const make2 = (order: readonly number[], extra: Partial<NativeFindBase> & { getRowCells?: (row: number) => readonly string[] } = {}) =>
+      (find = createNativeFind({
+        scroller,
+        host,
+        rowCount: order.length,
+        rowHeight: RH,
+        rowTop: 50,
+        charWidth: 8,
+        rowsPerChunk: PER,
+        getRowCells: cells(order),
+        columns: COLS,
+        ...extra,
+      }))
+
+    it('makes a transparent layer that starts at the first row, one line per row', () => {
+      make2(ident)
+      const c = chunk(4)!
+      expect(c.getAttribute('data-sp-layer')).toBe('transparent')
+      expect(c.style.top).toBe(`${50 + 4 * PER * RH}px`)
+      expect(c.style.color).toBe('transparent')
+      const lines = (c.firstChild as Text).data.split('\n')
+      expect(lines).toHaveLength(100)
+      expect(lines[50].split(/\t+/)).toEqual(['id450', 'ann'])
+    })
+
+    it('maps a row to its chunk and its line, with a short last chunk', () => {
+      make2(ident.slice(0, 250))
+      expect(find.chunkCount).toBe(3)
+      const last = (chunk(2)!.firstChild as Text).data.split('\n')
+      expect(last).toHaveLength(50)
+      expect(last[49].split(/\t+/)[0]).toBe('id249')
+    })
+
+    it('counts the offset of the rows from the top of the host when it shows the chunks near the view', async () => {
+      make2(ident)
+      expect(chunk(0)!.hasAttribute('hidden')).toBe(false) // scrollTop 0: the view reaches row (100 - 50) / 20
+      await scrollTo(50 + 5 * PER * RH + 10)
+      expect(chunk(5)!.hasAttribute('hidden')).toBe(false)
+      expect(chunk(4)!.getAttribute('hidden')).toBe('until-found')
+    })
+
+    it('puts the index over the cells (z-index option)', () => {
+      make2(ident, { zIndex: 26 })
+      expect(chunk(1)!.style.zIndex).toBe('26')
+    })
+
+    it('audits against the cells, once per match', () => {
+      make2(ident)
+      expect(find.audit('id450')).toMatchObject({ expected: 1, findable: 1, total: 1, missing: [], duplicates: [], extra: [], corrupt: [] })
+      expect(find.audit('ann').expected).toBe(334)
+    })
+
+    it('follows a new row order after a sort, a filter or a data change', () => {
+      make2(ident)
+      const before = find.audit('id450')
+      expect(before.findable).toBe(1)
+      find.destroy()
+      expect(host.querySelectorAll('[data-sp-chunk]')).toHaveLength(0)
+
+      // sort: reversed order, so row 450 is now row 549
+      const reversed = [...ident].reverse()
+      make2(reversed)
+      expect((chunk(5)!.firstChild as Text).data.split('\n')[49].split(/\t+/)[0]).toBe('id450')
+      expect(find.audit('id450')).toMatchObject({ expected: 1, findable: 1, missing: [], corrupt: [] })
+      find.destroy()
+
+      // filter: only the rows that end with 0, 250 rows left, 3 chunks
+      const filtered = ident.filter((n) => n % 4 === 0)
+      make2(filtered)
+      expect(find.chunkCount).toBe(3)
+      expect(find.audit('id450').findable).toBe(0)
+      expect(find.audit('id448')).toMatchObject({ expected: 1, findable: 1 })
+      find.destroy()
+
+      // data change: new text in the same rows
+      make2(ident, { getRowCells: (i) => [`new${i}`, 'zed'] })
+      expect(find.audit('id450').findable).toBe(0)
+      expect(find.audit('new450')).toMatchObject({ expected: 1, findable: 1, corrupt: [] })
+      expect(find.audit('zed').findable).toBe(1000)
+    })
+
+    it('reports the row of a Firefox selection from the line, not from the tabs', () => {
+      const onActiveRow = vi.fn()
+      make2(ident, { onActiveRow })
+      select(4, 'ann')
+      // The first "ann" in chunk 4 is on row 402 (400 is bob, 401 is cy). The tabs between the cells do not count as rows.
+      expect(onActiveRow).toHaveBeenCalledWith(402)
+      expect(find.mode).toBe('sparse')
+    })
   })
 })
