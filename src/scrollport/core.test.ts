@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   alignCells,
+  layoutCells,
   chunkCount,
   chunkOfRow,
   chunksOfQuery,
@@ -53,7 +54,10 @@ function cellStarts(line: string, cw: number, q: number): number[] {
   for (const ch of line) {
     if (ch === '\t') {
       start = -1
+      const before = pos
       pos = (Math.floor(pos / q + 1e-6) + 1) * q
+      // browsers skip a tab stop that is closer than half a character (checked in Chromium 157 and Firefox 160)
+      if (pos - before < cw / 2 - 1e-6) pos += q
     } else {
       if (start < 0) {
         start = pos
@@ -81,6 +85,14 @@ describe('alignCells', () => {
     expect(Math.abs(c - 320)).toBeLessThanOrEqual(10)
   })
 
+  it('follows the browser rule that a tab stop closer than half a character is skipped', () => {
+    // 11 characters of 7 px end at 77 px: the stop at 80 px is 3 px away, less than 3.5 px, so the browser tabs on to 100 px
+    const c: NativeFindColumn[] = [{ start: 0, end: 150 }, { start: 160, end: 300 }]
+    const line = alignCells(['x'.repeat(11), 'ab'], c, 7, 20)
+    expect(line.match(/\t/g)).toHaveLength(4) // 100, 120, 140, 160
+    expect(cellStarts(line, 7, 20)).toEqual([0, 160])
+  })
+
   it('keeps at least one tab between cells, also when a text is too long', () => {
     const line = alignCells(['x'.repeat(40), 'cd', 'ef'], cols, 8, 20)
     const parts = line.split(/\t+/)
@@ -96,6 +108,79 @@ describe('alignCells', () => {
   it('writes an empty cell as tabs only', () => {
     const line = alignCells(['a', '', 'z'], cols, 8, 20)
     expect(line.split(/\t+/)).toEqual(['a', 'z'])
+  })
+})
+
+describe('layoutCells (multi-line cells)', () => {
+  const cols: NativeFindColumn[] = [
+    { start: 8, end: 108 },
+    { start: 120, end: 300, lines: [{ dx: 30, dy: -7 }, { dx: 30, dy: 9 }] },
+    { start: 320, end: 400 },
+  ]
+
+  it('keeps the lines of a multi-line cell out of the row text and gives their place', () => {
+    const { text, overlays } = layoutCells(['ab', ['@ann', 'Ann Lee'], 'ef'], cols, 8, 20)
+    expect(text.split(/\t+/)).toEqual(['ab', 'ef'])
+    expect(overlays).toEqual([
+      { at: 3, text: '@ann', x: 150, dy: -7 },
+      { at: 3, text: 'Ann Lee', x: 150, dy: 9 },
+    ])
+  })
+
+  it('puts the overlays at the place of the cell in the row text, so the match order is the cell order', () => {
+    const { text, overlays } = layoutCells(['ab', ['one', 'two'], 'ef'], cols, 8, 20)
+    const at = overlays[0].at
+    expect(text.slice(0, at).replace(/\t/g, '')).toBe('ab')
+    expect(text.slice(at).replace(/\t/g, '')).toBe('ef')
+    expect(overlays.map((o) => o.at)).toEqual([at, at])
+  })
+
+  it('does not move the next cell: an overlay uses no width in the row text', () => {
+    const plain = layoutCells(['ab', '', 'ef'], cols, 8, 20).text
+    const multi = layoutCells(['ab', ['a very long first line of text', 'and a long second line'], 'ef'], cols, 8, 20).text
+    expect(multi.replace(/\t/g, '').length).toBe(plain.replace(/\t/g, '').length)
+    expect(cellStarts(multi, 8, 20).slice(-1)).toEqual(cellStarts(plain, 8, 20).slice(-1))
+  })
+
+  it('right aligns a line at the end of the cell', () => {
+    const c: NativeFindColumn[] = [{ start: 100, end: 300, align: 'end', lines: [{ dy: -5 }, { dy: 5 }] }]
+    const { overlays } = layoutCells([['ab', 'abcd']], c, 8, 20)
+    expect(overlays.map((o) => o.x)).toEqual([300 - 16, 300 - 32])
+  })
+
+  it('lets a line give its own place, for a text that does not start at the start of the cell', () => {
+    const c: NativeFindColumn[] = [{ start: 100, end: 300, lines: [{ dx: 10, dy: -4 }] }]
+    const { overlays } = layoutCells([[{ text: 'a', dx: 18 }, { text: 'b', dy: 6 }, 'c']], c, 8, 20)
+    expect(overlays.map((o) => [o.text, o.x, o.dy])).toEqual([
+      ['a', 118, -4], // own dx, dy of the column line 0
+      ['b', 100, 6], // own dy, no dx
+      ['c', 100, 0], // no geometry for line 2
+    ])
+  })
+
+  it('gives a font size that makes a line as wide as the visible text', () => {
+    // the index font is 12 px with a character width of 8 px here: a visible text of 6 px per character needs 9 px
+    const c: NativeFindColumn[] = [{ start: 0, end: 200, lines: [{ charWidth: 6 }, {}] }]
+    const { overlays } = layoutCells([['abcd', 'efgh']], c, 8, 20)
+    expect(overlays[0].fontSize).toBe(9)
+    expect(overlays[1].fontSize).toBeUndefined()
+  })
+
+  it('right aligns a line by the width of the visible text', () => {
+    const c: NativeFindColumn[] = [{ start: 0, end: 200, align: 'end', lines: [{ charWidth: 5 }] }]
+    const { overlays } = layoutCells([['abcd']], c, 8, 20)
+    expect(overlays[0].x).toBe(180)
+  })
+
+  it('writes a plain string in a multi-line column as a normal cell', () => {
+    const { text, overlays } = layoutCells(['ab', 'Department Summary', 'ef'], cols, 8, 20)
+    expect(overlays).toEqual([])
+    expect(text.split(/\t+/)).toEqual(['ab', 'Department Summary', 'ef'])
+  })
+
+  it('removes tabs and line breaks inside a line, and uses a line without geometry at dy 0', () => {
+    const { overlays } = layoutCells([['a\tb', 'c\nd', 'third']], [{ start: 10, end: 100, lines: [{ dy: -3 }] }], 8, 20)
+    expect(overlays.map((o) => [o.text, o.dy])).toEqual([['a b', -3], ['c d', 0], ['third', 0]])
   })
 })
 
@@ -411,6 +496,90 @@ describe('createNativeFind', () => {
       // The first "ann" in chunk 4 is on row 402 (400 is bob, 401 is cy). The tabs between the cells do not count as rows.
       expect(onActiveRow).toHaveBeenCalledWith(402)
       expect(find.mode).toBe('sparse')
+    })
+
+    describe('multi-line cells', () => {
+      const MCOLS: NativeFindColumn[] = [
+        { start: 8, end: 108 },
+        { start: 140, end: 300, lines: [{ dx: 30, dy: -7 }, { dx: 30, dy: 9 }] },
+        { start: 320, end: 400 },
+      ]
+      // the middle column of every row is two lines: a handle and a name. Row 5 is a group row with a plain text.
+      const mcells = (i: number): (string | string[])[] => [`id${i}`, i === 5 ? 'Group' : [`@user${i}`, `Name ${i}`], `mail${i}@x`]
+      const make3 = (extra: Partial<NativeFindBase> = {}) =>
+        (find = createNativeFind({ scroller, host, rowCount: 250, rowHeight: RH, rowTop: 50, charWidth: 8, rowsPerChunk: PER, getRowCells: mcells, columns: MCOLS, ...extra }))
+      const spans = (k: number) => [...chunk(k)!.querySelectorAll<HTMLElement>(':scope > span')]
+
+      it('puts each line of the cell in an absolutely placed span, at the place of the line on screen', () => {
+        make3()
+        const s = spans(1) // rows 100 to 199
+        expect(s).toHaveLength(200)
+        expect(s[0].textContent).toBe('@user100')
+        expect(s[0].style.left).toBe('170px') // column start 140 + dx 30
+        expect(s[0].style.top).toBe(`${0 * RH - 7}px`) // first row of the chunk, 7 px above the centre
+        expect(s[1].textContent).toBe('Name 100')
+        expect(s[1].style.top).toBe(`${0 * RH + 9}px`)
+        expect(s[2].style.top).toBe(`${1 * RH - 7}px`) // the next row
+        expect(s[0].style.position).toBe('absolute')
+      })
+
+      it('keeps one text line per row and puts the spans between the cells of the row', () => {
+        make3()
+        const c = chunk(0)!
+        const text = [...c.childNodes].filter((n) => n.nodeType === 3).map((n) => (n as Text).data).join('')
+        expect(text.split('\n')).toHaveLength(100)
+        // document order of row 7: id7, the two lines, mail7
+        const order = [...c.childNodes].map((n) => n.textContent).join('|')
+        expect(order).toContain('@user7|Name 7|')
+        expect(text.split('\n')[7].replace(/\t+/g, ' ').trim()).toBe('id7 mail7@x')
+      })
+
+      it('writes a plain string in a multi-line column as a normal cell, with no span', () => {
+        make3()
+        const c = chunk(0)!
+        expect([...c.querySelectorAll('span')].some((sp) => sp.textContent === 'Group')).toBe(false)
+        expect((c.textContent ?? '').includes('Group')).toBe(true)
+      })
+
+      it('audits the lines of the cell: once per match, no match across two lines', () => {
+        make3()
+        expect(find.audit('@user150')).toMatchObject({ expected: 1, findable: 1, total: 1, missing: [], duplicates: [], extra: [], corrupt: [] })
+        expect(find.audit('name 249')).toMatchObject({ expected: 1, findable: 1, corrupt: [] })
+        expect(find.audit('Group').findable).toBe(1)
+        expect(find.audit('user150name').expected).toBe(0)
+        expect(find.audit('user150name').total).toBe(0)
+      })
+
+      it('reports a chunk whose spans no longer match the data', () => {
+        make3()
+        spans(2)[3].textContent = 'tampered'
+        expect(find.audit('user').corrupt.length).toBeGreaterThan(0)
+      })
+
+      it('reports the row of a Firefox selection inside a span and after the spans', () => {
+        const onActiveRow = vi.fn()
+        make3({ onActiveRow })
+        const sp = spans(1)[41] // the name line of row 120
+        const node = sp.firstChild as Text
+        document.getSelection()!.setBaseAndExtent(node, 0, node, 4)
+        document.dispatchEvent(new Event('selectionchange'))
+        expect(onActiveRow).toHaveBeenLastCalledWith(120)
+        const flow = chunk(1)!.childNodes
+        const t = [...flow].filter((n) => n.nodeType === 3 && (n as Text).data.includes('mail130'))[0] as Text
+        const at = t.data.indexOf('mail130')
+        document.getSelection()!.setBaseAndExtent(t, at, t, at + 4)
+        document.dispatchEvent(new Event('selectionchange'))
+        expect(onActiveRow).toHaveBeenLastCalledWith(130)
+      })
+
+      it('switches to sparse mode for a query that only the lines of the cell hold', () => {
+        make3()
+        const node = spans(1)[100].firstChild as Text // the handle line of row 150
+        expect(node.data).toBe('@user150')
+        document.getSelection()!.setBaseAndExtent(node, 0, node, 8)
+        document.dispatchEvent(new Event('selectionchange'))
+        expect(find.mode).toBe('sparse')
+      })
     })
   })
 })

@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type RefObject } from 'react'
-import { createNativeFind, type NativeFind, type NativeFindBase, type NativeFindColumn, type NativeFindSource } from './core'
+import { createNativeFind, type NativeFind, type NativeFindBase, type NativeFindCell, type NativeFindColumn, type NativeFindSource } from './core'
 import './scrollport.css'
 
 export type UseFindIndexOptions = Omit<NativeFindBase, 'scroller' | 'host' | 'onActiveRow'> & {
   /** Text of one row (visible index). Use this or `getRowCells` with `columns`. Pass a stable function. */
   getRowText?: (row: number) => string
   /** Text of the cells of one row (transparent index). Needs `columns`. Pass a stable function. */
-  getRowCells?: (row: number) => readonly string[]
+  getRowCells?: (row: number) => readonly NativeFindCell[]
   /** Position of each column (transparent index). Pass a stable array: the index is built again when it changes. */
   columns?: readonly NativeFindColumn[]
   /** Build the index. Default true. Use false while the scroller is not in the page. */
