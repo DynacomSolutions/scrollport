@@ -362,7 +362,8 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
     const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT)
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
       const el = (n as Text).parentElement
-      if (!el || el.closest('script,style,template')) continue
+      // The browser find skips script, style, template and inert text (checked in Chromium and Firefox).
+      if (!el || el.closest('script,style,template,[inert]')) continue
       const hid = el.closest('[hidden]')
       if (hid && hid.getAttribute('hidden') !== 'until-found') continue
       const text = (n as Text).data.toLowerCase()

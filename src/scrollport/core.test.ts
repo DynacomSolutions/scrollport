@@ -275,6 +275,14 @@ describe('createNativeFind', () => {
       expect(find.audit('needle').findable).toBe(2)
     })
 
+    it('does not count inert text, which the find bar skips, but counts other text of the page', () => {
+      make()
+      host.insertAdjacentHTML('beforeend', '<span inert>needle</span><span id="plain">needle</span>')
+      const a = find.audit('needle')
+      expect(a.other).toHaveLength(1)
+      expect(a.other[0]).toContain('plain')
+    })
+
     it('reports a chunk that no longer matches the data', () => {
       make()
       ;(chunk(4)!.firstChild as Text).data = 'changed'
