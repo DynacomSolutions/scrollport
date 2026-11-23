@@ -97,14 +97,15 @@ How it works:
 - The index is built again when the rows change (sort, filter, expand, new data) or a column changes size. Cell texts are kept per row, so a sort or a filter only joins them again.
 - `nativeFind` gives every column the width of its `size`. A flexible column (`1fr`) would move the cells away from the index. A table that is narrower than its columns total leaves the free space empty on the right.
 
-Cost of the demo (100000 users, 25 columns, 100007 rows with the group rows), measured in Chromium 157 and Firefox 160 on a Linux host with a load average of 60 or more:
+Cost of the demo (100000 users, 25 columns, 100007 rows with the group rows), measured in Chromium 157 on a Linux host (16 cores) at two loads:
 
 | What | Value |
 |---|---|
 | Index text in the page | 39.1 MB in 1001 chunks (the 6 column grid demo: about 4 MB) |
-| First build, with the formatting of all cells | 3.3 to 4.5 s |
-| Build again after a sort, a collapse or an expand | 1.3 to 1.8 s (2 to 3 s from the click to the new index) |
-| Memory | JS heap 0.7 to 1.3 GB (it includes garbage that is not collected yet); all processes of the browser together 2.8 to 4 GB |
+| First build, with the formatting of all cells | 3.3 to 4.5 s at a host load average of 60. 13.8 s at a load average of 300 |
+| Build again after a sort, a collapse or an expand | 1.3 to 1.8 s (2 to 4 s from the click to the new index) |
+| JS heap, fresh browser | 0.7 GB after the load. Each build again adds about 0.3 GB until the next garbage collection (0.9 GB after one) |
+| Memory, all processes of the browser | 2.2 GB in a fresh browser. A renderer that loaded the page 3 times reached 6 to 8 GB |
 
 The build runs on the main thread. During a build the page does not respond. Changing the data while the find bar is open ends the current find: the old chunks leave the page.
 

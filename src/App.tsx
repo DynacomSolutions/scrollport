@@ -120,7 +120,8 @@ function hostOf(url: string) {
 }
 
 /** Rows of the demo. The table draws only the rows in view, and the find bar reaches all of them. */
-export const DEMO_ROWS = 100_000
+// `?rows=N` shrinks the demo (tests and tools): the cost of native find grows with the number of rows.
+export const DEMO_ROWS = Math.min(100_000, Math.max(100, Number(new URLSearchParams(window.location.search).get('rows')) || 100_000))
 
 function roundTo(value: number, decimals: number): number {
   const scale = 10 ** decimals
