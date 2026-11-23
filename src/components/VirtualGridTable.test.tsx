@@ -114,7 +114,7 @@ describe('VirtualGridTable with native find', () => {
 
   it('puts the right-aligned column text inside its own cell', () => {
     render(table(people(5)))
-    // columns: name 200 px (0..200), score 100 px (200..300), city 140 px. Padding is 1.25rem = 20 px.
+    // columns: name 200 px (0..200), score 100 px (200..300), city 140 px. Padding is 1.25rem = 20 px. The tab stop is 10 px.
     const line = (el.querySelector('[data-sp-chunk="0"]')!.firstChild as Text).data.split('\n')[1]
     const cw = 7 // the test DOM draws nothing: the core falls back to 7 px per character
     const starts: number[] = []
@@ -122,7 +122,9 @@ describe('VirtualGridTable with native find', () => {
     let inText = false
     for (const ch of line) {
       if (ch === '\t') {
-        pos = (Math.floor(pos / 20 + 1e-6) + 1) * 20
+        const before = pos
+        pos = (Math.floor(pos / 10 + 1e-6) + 1) * 10
+        if (pos - before < cw / 2 - 1e-6) pos += 10 // browsers skip a tab stop closer than half a character
         inText = false
       } else {
         if (!inText) starts.push(pos)
@@ -132,7 +134,36 @@ describe('VirtualGridTable with native find', () => {
     }
     expect(line.split(/\t+/).filter(Boolean)).toEqual(['name1', '7 pts', 'Oslo'])
     expect(starts[1]).toBeGreaterThan(200)
-    expect(starts[1] + 5 * cw).toBeLessThanOrEqual(300 + 10) // ends at the right edge of the score cell, within half a tab stop
-    expect(starts[2]).toBeGreaterThanOrEqual(300 + 20 - 10) // the city cell starts after the score cell
+    expect(starts[1] + 5 * cw).toBeLessThanOrEqual(300 + 5) // ends at the right edge of the score cell, within half a tab stop
+    expect(starts[2]).toBeGreaterThanOrEqual(300 + 20 - 5) // the city cell starts after the score cell
+  })
+
+  it('indexes a cell with several lines as placed spans and moves no other cell', () => {
+    const two: ColumnDef<Person>[] = [
+      {
+        accessorKey: 'name',
+        header: 'Name',
+        size: 200,
+        meta: {
+          fixed: true,
+          findText: (row) => [`@${row.original.name}`, `Name of ${row.original.id}`],
+          findLines: [
+            { dx: 30, dy: -7 },
+            { dx: 30, dy: 9 },
+          ],
+        } as ColumnMeta<Person>,
+        cell: ({ row }) => <IndexedText text={row.original.name} />,
+      },
+      columns[2],
+    ]
+    render(<VirtualGridTable<Person> tableId="t2" data={people(5)} columns={two} displayMode="table" nativeFind />)
+    const chunk = el.querySelector('[data-sp-chunk="0"]')!
+    const spans = [...chunk.querySelectorAll<HTMLElement>(':scope > span')]
+    expect(spans.map((sp) => sp.textContent).slice(0, 4)).toEqual(['@name0', 'Name of 0', '@name1', 'Name of 1'])
+    expect(spans[0].style.left).toBe('50px') // cell padding 20 px + dx 30
+    expect(spans[0].style.top).toBe('-7px')
+    expect(spans[3].style.top).toBe(`${46 + 9}px`) // the second row of the chunk
+    const text = [...chunk.childNodes].filter((n) => n.nodeType === 3).map((n) => (n as Text).data).join('')
+    expect(text.split('\n')[1].split(/\t+/).filter(Boolean)).toEqual(['Oslo']) // the lines are not in the row text
   })
 })
