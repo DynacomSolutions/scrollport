@@ -1,3 +1,4 @@
+import './styles.css'
 import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
 import type { ColumnDef, SortingState } from '@tanstack/react-table'
 import { generateData, type UserRecord } from './data'
