@@ -1,0 +1,50 @@
+.sp-grid {
+  --sp-fg: #14181f;
+  --sp-bg: #fff;
+  --sp-line: #cfd5de;
+  --sp-stripe: #f0f3f8;
+  --sp-active: #ffd966;
+  --sp-accent: #1f5fd0;
+  position: relative;
+  box-sizing: border-box;
+  overflow: auto;
+  color: var(--sp-fg);
+  background: var(--sp-bg);
+  border: 1px solid var(--sp-line);
+  border-radius: 8px;
+  font: 13px ui-monospace, Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  .sp-grid {
+    --sp-fg: #e6e9ee;
+    --sp-bg: #1b2028;
+    --sp-line: #343c49;
+    --sp-stripe: #222833;
+    --sp-active: #7a5c00;
+    --sp-accent: #6ea4ff;
+  }
+}
+
+.sp-host {
+  position: relative;
+}
+
+/* The rows draw only a background. All text sits in the index chunks, which lie over the rows. */
+.sp-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--sp-line);
+}
+
+.sp-row-odd {
+  background: var(--sp-stripe);
+}
+
+.sp-row-active {
+  background: var(--sp-active);
+  outline: 2px solid var(--sp-accent);
+  outline-offset: -2px;
+}
