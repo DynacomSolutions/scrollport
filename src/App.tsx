@@ -1,6 +1,6 @@
 import './styles.css'
-import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
-import type { ColumnDef, SortingState } from '@tanstack/react-table'
+import { useCallback, useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
+import type { ColumnDef, Row, SortingState } from '@tanstack/react-table'
 import { generateData, type UserRecord } from './data'
 import {
   OmniSearchBar,
@@ -10,6 +10,9 @@ import {
   type OmniSearchState,
 } from './components/OmniSearchBar'
 import { VirtualGridTable, type ColumnMeta, type TableDisplayMode } from './components/VirtualGridTable'
+import type { NativeFind } from './scrollport/core'
+import { IndexedText } from './scrollport/react'
+import { publishFindTest } from './demo/findTest'
 
 type TableRow = {
   id: string
@@ -90,13 +93,34 @@ const dateTimeFormatter = new Intl.DateTimeFormat('en-US', {
 })
 const integerFormatter = new Intl.NumberFormat('en-US')
 
+// Dates repeat a lot (a day, a minute), and the find index formats every row, so the formatted text is kept.
+const dateCache = new Map<string, string>()
+const dateTimeCache = new Map<string, string>()
+
 function formatDate(value: string) {
-  return dateFormatter.format(new Date(value))
+  let text = dateCache.get(value)
+  if (text === undefined) {
+    text = dateFormatter.format(new Date(value))
+    dateCache.set(value, text)
+  }
+  return text
 }
 
 function formatDateTime(value: string) {
-  return dateTimeFormatter.format(new Date(value))
+  let text = dateTimeCache.get(value)
+  if (text === undefined) {
+    text = dateTimeFormatter.format(new Date(value))
+    dateTimeCache.set(value, text)
+  }
+  return text
 }
+
+function hostOf(url: string) {
+  return new URL(url).host
+}
+
+/** Rows of the demo. The table draws only the rows in view, and the find bar reaches all of them. */
+export const DEMO_ROWS = 100_000
 
 function roundTo(value: number, decimals: number): number {
   const scale = 10 ** decimals
@@ -129,7 +153,7 @@ function highlightText(text: string, query: string): ReactNode {
   const source = text ?? ''
   const needle = query.trim()
   if (!needle) {
-    return source
+    return <IndexedText text={source} />
   }
   const lowerSource = source.toLowerCase()
   const lowerNeedle = needle.toLowerCase()
@@ -139,23 +163,19 @@ function highlightText(text: string, query: string): ReactNode {
 
   while (matchIndex !== -1) {
     if (matchIndex > cursor) {
-      parts.push(source.slice(cursor, matchIndex))
+      parts.push(<IndexedText key={`t${cursor}`} text={source.slice(cursor, matchIndex)} />)
     }
     const end = matchIndex + lowerNeedle.length
-    parts.push(
-      <mark key={`${matchIndex}-${end}`} className="cell-highlight">
-        {source.slice(matchIndex, end)}
-      </mark>,
-    )
+    parts.push(<IndexedText key={`${matchIndex}-${end}`} as="mark" className="cell-highlight" text={source.slice(matchIndex, end)} />)
     cursor = end
     matchIndex = lowerSource.indexOf(lowerNeedle, cursor)
   }
 
   if (cursor < source.length) {
-    parts.push(source.slice(cursor))
+    parts.push(<IndexedText key={`t${cursor}`} text={source.slice(cursor)} />)
   }
 
-  return parts.length > 0 ? parts : source
+  return parts.length > 0 ? parts : <IndexedText text={source} />
 }
 
 function uniqueSorted(values: string[]): string[] {
@@ -430,11 +450,12 @@ function App() {
   const [sorting, setSorting] = useState<SortingState>(initialSortingState)
   const [autoScrollX, setAutoScrollX] = useState<'left' | 'right' | 'off'>(initialAutoScrollX)
   const [displayMode, setDisplayMode] = useState<TableDisplayMode>(initialDisplayMode)
-  const baseData = useMemo(() => generateData(10_000), [])
+  const baseData = useMemo(() => generateData(DEMO_ROWS), [])
   const rawSearchPill = searchState.pills.find((pill) => pill.columnId === RAW_SEARCH_PILL_ID)
   const rawQuery = rawSearchPill?.value.trim() ?? (searchState.pills.length === 0 ? searchState.globalQuery.trim() : '')
-  const fieldPills = searchState.pills.filter((pill) => pill.columnId !== RAW_SEARCH_PILL_ID)
-  const nonDepartmentPills = fieldPills.filter((pill) => pill.columnId !== 'department')
+  // Kept between renders: a new array each time would filter all rows again (and build the find index again) on every render.
+  const fieldPills = useMemo(() => searchState.pills.filter((pill) => pill.columnId !== RAW_SEARCH_PILL_ID), [searchState.pills])
+  const nonDepartmentPills = useMemo(() => fieldPills.filter((pill) => pill.columnId !== 'department'), [fieldPills])
   const hasActiveSearch = searchState.globalQuery.trim().length > 0 || searchState.pills.length > 0
 
   const omniColumns = useMemo<OmniSearchColumn<UserRecord>[]>(() => {
@@ -577,48 +598,63 @@ function App() {
     return byKey
   }, [numericPrecision])
 
-  const columns = useMemo<ColumnDef<TableRow>[]>(
-    () => [
+  // One entry per column. `text` is the text that the cell shows: the cell draws it with IndexedText, and the native find
+  // index holds the same text (`meta.findText`). Both read `text`, so they cannot differ.
+  const columns = useMemo<ColumnDef<TableRow>[]>(() => {
+    type Spec = {
+      key: keyof TableRow & string
+      header: string
+      size: number
+      minSize: number
+      meta?: Partial<ColumnMeta<TableRow>>
+      text: (row: TableRow) => string
+      cell?: (row: Row<TableRow>, text: string) => ReactNode
+    }
+    const summary = (label: string) => <IndexedText className="summary-label" text={label} />
+    const num = (key: NumericColumnKey) => (row: TableRow) => numberFormatters[key].format(Number(row[key]))
+    const money = (key: (typeof CURRENCY_COLUMNS)[number]) => (row: TableRow) => currencyFormatters[key].format(Number(row[key]))
+    const isGroup = (row: Row<TableRow>) => row.original.rowType === 'department'
+    const specs: Spec[] = [
       {
-        accessorKey: 'department',
+        key: 'department',
         header: 'Department',
-        minSize: 220,
         size: 260,
-        meta: { fixed: true, minPx: 220, sticky: true } as ColumnMeta,
-        cell: ({ row, getValue }) =>
-          row.original.rowType === 'department' ? (
+        minSize: 220,
+        meta: { fixed: true, minPx: 220, sticky: true },
+        text: (row) => (row.rowType === 'department' ? `${row.department} ${row.userCount} users` : row.department),
+        cell: (row) =>
+          isGroup(row) ? (
             <button className="group-toggle" type="button" onClick={row.getToggleExpandedHandler()}>
               <span className={`chevron${row.getIsExpanded() ? ' is-open' : ''}`}>▸</span>
-              <strong>{highlightText(String(getValue()), rawQuery)}</strong>
-              <span className="group-count">{row.original.userCount} users</span>
+              <strong>{highlightText(row.original.department, rawQuery)}</strong>
+              <IndexedText className="group-count" text={`${row.original.userCount} users`} />
             </button>
           ) : (
-            <span className="subrow-indent">{highlightText(String(getValue()), rawQuery)}</span>
+            <span className="subrow-indent">{highlightText(row.original.department, rawQuery)}</span>
           ),
       },
       {
-        accessorKey: 'recordId',
+        key: 'recordId',
         header: 'ID',
         size: 90,
         minSize: 70,
-        meta: { fixed: true, numeric: true, minPx: 70 } as ColumnMeta,
-        cell: ({ row, getValue }) =>
-          row.original.rowType === 'department'
-            ? '-'
-            : highlightText(numberFormatters.recordId.format(Number(getValue())), rawQuery),
+        meta: { fixed: true, numeric: true, minPx: 70 },
+        text: (row) => (row.rowType === 'department' ? '-' : numberFormatters.recordId.format(row.recordId)),
+        cell: (row, text) => (isGroup(row) ? <IndexedText text="-" /> : highlightText(text, rawQuery)),
       },
       {
-        accessorKey: 'username',
+        key: 'username',
         header: 'User',
         size: 260,
         minSize: 220,
-        meta: { fixed: true, minPx: 220, sticky: true } as ColumnMeta,
-        cell: ({ row }) =>
-          row.original.rowType === 'department' ? (
-            <span className="summary-label">Department Summary</span>
+        meta: { fixed: true, minPx: 220, sticky: true },
+        text: (row) => (row.rowType === 'department' ? 'Department Summary' : `@${row.username} ${row.fullName}`),
+        cell: (row) =>
+          isGroup(row) ? (
+            summary('Department Summary')
           ) : (
             <div className="user-cell">
-              <img src={row.original.avatarUrl} alt={row.original.username} loading="lazy" />
+              <img src={row.original.avatarUrl} alt="" loading="lazy" />
               <div>
                 <div className="user-primary">{highlightText(`@${row.original.username}`, rawQuery)}</div>
                 <div className="user-secondary">{highlightText(row.original.fullName, rawQuery)}</div>
@@ -626,217 +662,118 @@ function App() {
             </div>
           ),
       },
+      { key: 'email', header: 'Email', size: 240, minSize: 220, meta: { minPx: 220 }, text: (row) => row.email },
+      { key: 'role', header: 'Role', size: 190, minSize: 180, meta: { minPx: 180 }, text: (row) => row.role },
+      { key: 'country', header: 'Country', size: 170, minSize: 160, meta: { minPx: 160 }, text: (row) => row.country },
+      { key: 'city', header: 'City', size: 140, minSize: 130, meta: { minPx: 130 }, text: (row) => row.city },
       {
-        accessorKey: 'email',
-        header: 'Email',
-        minSize: 220,
-        size: 240,
-        meta: { minPx: 220 } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(String(getValue()), rawQuery),
-      },
-      {
-        accessorKey: 'role',
-        header: 'Role',
-        minSize: 180,
-        size: 190,
-        meta: { minPx: 180 } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(String(getValue()), rawQuery),
-      },
-      {
-        accessorKey: 'country',
-        header: 'Country',
-        minSize: 160,
-        size: 170,
-        meta: { minPx: 160 } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(String(getValue()), rawQuery),
-      },
-      {
-        accessorKey: 'city',
-        header: 'City',
-        minSize: 130,
-        size: 140,
-        meta: { minPx: 130 } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(String(getValue()), rawQuery),
-      },
-      {
-        accessorKey: 'status',
+        key: 'status',
         header: 'Status',
-        minSize: 120,
         size: 130,
-        meta: { minPx: 120 } as ColumnMeta,
-        cell: ({ row, getValue }) =>
-          row.original.rowType === 'department' ? (
-            <span className="summary-label">Mixed</span>
+        minSize: 120,
+        meta: { minPx: 120 },
+        text: (row) => (row.rowType === 'department' ? 'Mixed' : row.status),
+        cell: (row, text) =>
+          isGroup(row) ? (
+            summary('Mixed')
           ) : (
-            <span className={`pill pill-${String(getValue()).toLowerCase()}`}>{highlightText(String(getValue()), rawQuery)}</span>
+            <span className={`pill pill-${row.original.status.toLowerCase()}`}>{highlightText(text, rawQuery)}</span>
           ),
       },
       {
-        accessorKey: 'plan',
+        key: 'plan',
         header: 'Plan',
-        minSize: 120,
         size: 140,
-        meta: { minPx: 120 } as ColumnMeta,
-        cell: ({ row, getValue }) =>
-          row.original.rowType === 'department' ? (
-            <span className="summary-label">Mixed</span>
+        minSize: 120,
+        meta: { minPx: 120 },
+        text: (row) => (row.rowType === 'department' ? 'Mixed' : row.plan),
+        cell: (row, text) =>
+          isGroup(row) ? summary('Mixed') : <span className="pill pill-plan">{highlightText(text, rawQuery)}</span>,
+      },
+      {
+        key: 'signupDate',
+        header: 'Signup Date',
+        size: 150,
+        minSize: 130,
+        meta: { minPx: 130, numeric: true },
+        text: (row) => formatDate(row.signupDate),
+      },
+      {
+        key: 'lastLoginAt',
+        header: 'Last Login',
+        size: 210,
+        minSize: 190,
+        meta: { minPx: 190, numeric: true },
+        text: (row) => formatDateTime(row.lastLoginAt),
+      },
+      {
+        key: 'website',
+        header: 'Website',
+        size: 230,
+        minSize: 210,
+        meta: { minPx: 210 },
+        text: (row) => (row.rowType === 'department' ? '-' : hostOf(row.website)),
+        cell: (row, text) =>
+          isGroup(row) ? (
+            summary('-')
           ) : (
-            <span className="pill pill-plan">{highlightText(String(getValue()), rawQuery)}</span>
+            <a href={row.original.website} target="_blank" rel="noreferrer" className="link-cell">
+              {highlightText(text, rawQuery)}
+            </a>
           ),
       },
       {
-        accessorKey: 'signupDate',
-        header: 'Signup Date',
-        minSize: 130,
-        size: 150,
-        meta: { minPx: 130, numeric: true } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(formatDate(String(getValue())), rawQuery),
-      },
-      {
-        accessorKey: 'lastLoginAt',
-        header: 'Last Login',
-        minSize: 190,
-        size: 210,
-        meta: { minPx: 190, numeric: true } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(formatDateTime(String(getValue())), rawQuery),
-      },
-      {
-        accessorKey: 'website',
-        header: 'Website',
-        minSize: 210,
-        size: 230,
-        meta: { minPx: 210 } as ColumnMeta,
-        cell: ({ row, getValue }) => {
-          if (row.original.rowType === 'department') {
-            return <span className="summary-label">-</span>
-          }
-          const href = String(getValue())
-          const host = new URL(href).host
-          return (
-            <a href={href} target="_blank" rel="noreferrer" className="link-cell">
-              {highlightText(host, rawQuery)}
-            </a>
-          )
-        },
-      },
-      {
-        accessorKey: 'profileUrl',
+        key: 'profileUrl',
         header: 'Profile Link',
-        minSize: 130,
         size: 160,
-        meta: { minPx: 130 } as ColumnMeta,
-        cell: ({ row, getValue }) => {
-          if (row.original.rowType === 'department') {
-            return <span className="summary-label">-</span>
-          }
-          const href = String(getValue())
-          return (
-            <a href={href} target="_blank" rel="noreferrer" className="link-cell">
-              {highlightText('Open profile', rawQuery)}
+        minSize: 130,
+        meta: { minPx: 130 },
+        text: (row) => (row.rowType === 'department' ? '-' : 'Open profile'),
+        cell: (row, text) =>
+          isGroup(row) ? (
+            summary('-')
+          ) : (
+            <a href={row.original.profileUrl} target="_blank" rel="noreferrer" className="link-cell">
+              {highlightText(text, rawQuery)}
             </a>
-          )
-        },
+          ),
       },
+      { key: 'company', header: 'Company', size: 200, minSize: 180, meta: { minPx: 180 }, text: (row) => row.company },
+      { key: 'orders', header: 'Orders', size: 110, minSize: 100, meta: { minPx: 100, numeric: true }, text: num('orders') },
+      { key: 'sessions', header: 'Sessions', size: 120, minSize: 110, meta: { minPx: 110, numeric: true }, text: num('sessions') },
       {
-        accessorKey: 'company',
-        header: 'Company',
-        minSize: 180,
-        size: 200,
-        meta: { minPx: 180 } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(String(getValue()), rawQuery),
-      },
-      {
-        accessorKey: 'orders',
-        header: 'Orders',
-        minSize: 100,
-        size: 110,
-        meta: { minPx: 100, numeric: true } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(numberFormatters.orders.format(Number(getValue())), rawQuery),
-      },
-      {
-        accessorKey: 'sessions',
-        header: 'Sessions',
-        minSize: 110,
-        size: 120,
-        meta: { minPx: 110, numeric: true } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(numberFormatters.sessions.format(Number(getValue())), rawQuery),
-      },
-      {
-        accessorKey: 'conversionRate',
+        key: 'conversionRate',
         header: 'Conv. Rate',
-        minSize: 120,
         size: 130,
-        meta: { minPx: 120, numeric: true } as ColumnMeta,
-        cell: ({ getValue }) =>
-          highlightText(`${numberFormatters.conversionRate.format(Number(getValue()))}%`, rawQuery),
-      },
-      {
-        accessorKey: 'revenue',
-        header: 'Revenue',
-        minSize: 130,
-        size: 150,
-        meta: { minPx: 130, numeric: true } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(currencyFormatters.revenue.format(Number(getValue())), rawQuery),
-      },
-      {
-        accessorKey: 'balance',
-        header: 'Balance',
-        minSize: 130,
-        size: 150,
-        meta: { minPx: 130, numeric: true } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(currencyFormatters.balance.format(Number(getValue())), rawQuery),
-      },
-      {
-        accessorKey: 'mrr',
-        header: 'MRR',
         minSize: 120,
-        size: 140,
-        meta: { minPx: 120, numeric: true } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(currencyFormatters.mrr.format(Number(getValue())), rawQuery),
+        meta: { minPx: 120, numeric: true },
+        text: (row) => `${numberFormatters.conversionRate.format(Number(row.conversionRate))}%`,
       },
+      { key: 'revenue', header: 'Revenue', size: 150, minSize: 130, meta: { minPx: 130, numeric: true }, text: money('revenue') },
+      { key: 'balance', header: 'Balance', size: 150, minSize: 130, meta: { minPx: 130, numeric: true }, text: money('balance') },
+      { key: 'mrr', header: 'MRR', size: 140, minSize: 120, meta: { minPx: 120, numeric: true }, text: money('mrr') },
+      { key: 'arr', header: 'ARR', size: 150, minSize: 130, meta: { minPx: 130, numeric: true }, text: money('arr') },
+      { key: 'expense', header: 'Expense', size: 150, minSize: 130, meta: { minPx: 130, numeric: true }, text: money('expense') },
+      { key: 'score', header: 'Score', size: 100, minSize: 90, meta: { minPx: 90, numeric: true }, text: num('score') },
+      { key: 'ticketsOpen', header: 'Tickets', size: 110, minSize: 100, meta: { minPx: 100, numeric: true }, text: num('ticketsOpen') },
       {
-        accessorKey: 'arr',
-        header: 'ARR',
-        minSize: 130,
-        size: 150,
-        meta: { minPx: 130, numeric: true } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(currencyFormatters.arr.format(Number(getValue())), rawQuery),
-      },
-      {
-        accessorKey: 'expense',
-        header: 'Expense',
-        minSize: 130,
-        size: 150,
-        meta: { minPx: 130, numeric: true } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(currencyFormatters.expense.format(Number(getValue())), rawQuery),
-      },
-      {
-        accessorKey: 'score',
-        header: 'Score',
-        minSize: 90,
-        size: 100,
-        meta: { minPx: 90, numeric: true } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(numberFormatters.score.format(Number(getValue())), rawQuery),
-      },
-      {
-        accessorKey: 'ticketsOpen',
-        header: 'Tickets',
-        minSize: 100,
-        size: 110,
-        meta: { minPx: 100, numeric: true } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(numberFormatters.ticketsOpen.format(Number(getValue())), rawQuery),
-      },
-      {
-        accessorKey: 'renewalDate',
+        key: 'renewalDate',
         header: 'Renewal',
-        minSize: 130,
         size: 150,
-        meta: { minPx: 130, numeric: true } as ColumnMeta,
-        cell: ({ getValue }) => highlightText(formatDate(String(getValue())), rawQuery),
+        minSize: 130,
+        meta: { minPx: 130, numeric: true },
+        text: (row) => formatDate(row.renewalDate),
       },
-    ],
-    [currencyFormatters, numberFormatters, rawQuery],
-  )
+    ]
+    return specs.map<ColumnDef<TableRow>>((spec) => ({
+      accessorKey: spec.key,
+      header: spec.header,
+      minSize: spec.minSize,
+      size: spec.size,
+      meta: { ...spec.meta, findText: (row: Row<TableRow>) => spec.text(row.original) } satisfies ColumnMeta<TableRow>,
+      cell: ({ row }) => (spec.cell ? spec.cell(row, spec.text(row.original)) : highlightText(spec.text(row.original), rawQuery)),
+    }))
+  }, [currencyFormatters, numberFormatters, rawQuery])
 
   useEffect(() => {
     writeSearchStateToUrl(TABLE_ID, searchState, sorting, autoScrollX)
@@ -849,6 +786,8 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(`table.${TABLE_ID}.xScroll`, autoScrollX)
   }, [autoScrollX])
+
+  const onFind = useCallback((find: NativeFind | null) => publishFindTest(find, data.reduce((n, row) => n + 1 + (row.subRows?.length ?? 0), 0)), [data])
 
   const displayModeIcon = displayMode === 'table' ? '▦' : displayMode === 'card' ? '▤' : '◌'
   const xScrollIcon = autoScrollX === 'left' ? '⬅' : autoScrollX === 'right' ? '➡' : '↔'
@@ -919,6 +858,9 @@ function App() {
             isSubheaderRow={(row) => row.original.rowType === 'department'}
             canSubheaderStick={(row) => row.original.rowType === 'department' && row.getIsExpanded()}
             autoExpandedRowIds={autoExpandedRowIds}
+            nativeFind
+            defaultExpanded
+            onFind={onFind}
           />
         </div>
       </section>

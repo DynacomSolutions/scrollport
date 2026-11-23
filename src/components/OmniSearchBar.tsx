@@ -109,26 +109,6 @@ export function OmniSearchBar<TData>({ columns, onChange, initialState }: OmniSe
     })
   }, [onChange, pills])
 
-  useEffect(() => {
-    const onWindowKeyDown = (event: KeyboardEvent) => {
-      const isModF = (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f'
-      if (!isModF) {
-        return
-      }
-      event.preventDefault()
-      setIsFocused(true)
-      setEditingPillIndex(null)
-      setActivePillIndex(null)
-      globalInputRef.current?.focus()
-      globalInputRef.current?.select()
-    }
-
-    window.addEventListener('keydown', onWindowKeyDown)
-    return () => {
-      window.removeEventListener('keydown', onWindowKeyDown)
-    }
-  }, [])
-
   const focusGlobalInput = () => {
     requestAnimationFrame(() => {
       globalInputRef.current?.focus()

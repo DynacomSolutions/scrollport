@@ -83,16 +83,15 @@ function between(min: number, max: number, rand: () => number): number {
   return min + (max - min) * rand()
 }
 
+// A fixed "now", so the demo shows the same rows on every load and a test can compute the expected text.
+const NOW = Date.UTC(2026, 10, 23, 12, 0, 0)
+
 function isoDate(offsetDays: number): string {
-  const d = new Date()
-  d.setUTCDate(d.getUTCDate() - offsetDays)
-  return d.toISOString().slice(0, 10)
+  return new Date(NOW - offsetDays * 86_400_000).toISOString().slice(0, 10)
 }
 
 function isoDateTime(offsetMinutes: number): string {
-  const d = new Date()
-  d.setUTCMinutes(d.getUTCMinutes() - offsetMinutes)
-  return d.toISOString()
+  return new Date(NOW - offsetMinutes * 60_000).toISOString()
 }
 
 function roundTo(value: number, decimals: number): number {
