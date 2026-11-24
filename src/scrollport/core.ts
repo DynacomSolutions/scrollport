@@ -57,16 +57,21 @@ export type NativeFindPlacedLine = {
  */
 export type NativeFindCell = string | readonly (string | NativeFindPlacedLine)[]
 
-/** A line of a multi-line cell in the index: text that lies at an exact place over the row. */
+/**
+ * A piece of the row text that the index draws away from its place in the flow: a line of a multi-line cell, or a text that
+ * does not start at the start of its column. The piece stays in the row text. The index wraps it in an inline span with
+ * `position: relative`, which moves the drawing and the find highlight but not the flow.
+ */
 export type NativeFindOverlay = {
-  /** Offset in the row text where the overlay sits in the document order. */
+  /** Offset of the piece in the row text. */
   at: number
-  text: string
-  /** Left edge of the text in px from the left edge of the host. */
-  x: number
-  /** Distance in px from the centre of the row to the centre of the line. */
+  /** Length of the piece in characters. */
+  length: number
+  /** Distance in px to move the piece to the right (negative: to the left). */
+  dx: number
+  /** Distance in px to move the piece down (negative: up). */
   dy: number
-  /** Font size in px of the line, when it differs from the index font. */
+  /** Font size in px of the piece, when it differs from the index font. */
   fontSize?: number
 }
 
@@ -180,9 +185,9 @@ const baseFontSize = 12
  * `quantum`, so a cell lies at most half a quantum from its true place, unless the text of the cell before it is too long.
  * There is always at least one tab between two cells, so a match never spans two cells.
  *
- * A cell with several lines (an array) is not written in the line. Its lines are returned as overlays: text that the index
- * puts at an exact place (`x`, `dy`), so a line lies on the visible line. An overlay uses no width in the line, so it never
- * moves the next cell.
+ * A cell with several lines (an array) writes each line as a piece, in the document order of the cell. A piece that must
+ * lie at an exact place (`dx`, `dy`, `charWidth`) is also returned as an overlay: the index moves its drawing with
+ * `position: relative`. The flow does not change, and the text stays in one block with its row, which the browser find needs.
  */
 export function layoutCells(
   cells: readonly NativeFindCell[],
@@ -200,33 +205,46 @@ export function layoutCells(
     const next = (Math.floor(pos / quantum + EPS) + 1) * quantum
     pos = next - pos < minTab - EPS ? next + quantum : next
   }
+  let first = true
+  // Writes one piece of text, as near as the tab stops allow to `want` (the left edge of the visible text), and returns the flow position of its start.
+  const write = (text: string, width: number, want: number): number => {
+    if (!first) tab()
+    first = false
+    const target = Math.round(want / quantum) * quantum
+    while (pos < target - minTab) tab() // closer than half a character: the browser would skip the stop, so the text stays here
+    const start = pos
+    out += text
+    pos += width
+    return start
+  }
   for (let c = 0; c < cells.length; c++) {
     const cell = cells[c]
     const col = columns[Math.min(c, columns.length - 1)]
-    if (c > 0) tab()
-    if (typeof cell !== 'string') {
-      cell.forEach((line, k) => {
-        const own = typeof line === 'string' ? undefined : line
-        const text = cleanCell(typeof line === 'string' ? line : line.text)
-        const geometry = col?.lines?.[k]
-        const base = col ? col.start + (own?.dx ?? geometry?.dx ?? 0) : pos
-        const wanted = own?.charWidth ?? geometry?.charWidth
-        const width = text.length * (wanted ?? charWidth)
-        const x = col && col.align === 'end' ? Math.max(base, col.end - width) : base
-        const overlay: NativeFindOverlay = { at: out.length, text, x, dy: own?.dy ?? geometry?.dy ?? 0 }
-        // a monospace font is as wide as it is high: the font size gives the character width that the visible text has
-        if (wanted && charWidth > 0) overlay.fontSize = Math.round((baseFontSize * wanted) / charWidth * 100) / 100
-        overlays.push(overlay)
-      })
+    if (typeof cell === 'string') {
+      const text = cleanCell(cell)
+      const width = text.length * charWidth
+      write(text, width, col ? (col.align === 'end' ? Math.max(col.start, col.end - width) : col.start) : pos)
       continue
     }
-    const text = cleanCell(cell)
-    const width = text.length * charWidth
-    const want = col ? (col.align === 'end' ? Math.max(col.start, col.end - width) : col.start) : pos
-    const target = Math.round(want / quantum) * quantum
-    while (pos < target - minTab) tab() // closer than half a character: the browser would skip the stop, so the cell stays here
-    out += text
-    pos += width
+    cell.forEach((line, k) => {
+      const own = typeof line === 'string' ? undefined : line
+      const text = cleanCell(typeof line === 'string' ? line : line.text)
+      const geometry = col?.lines?.[k]
+      const wanted = own?.charWidth ?? geometry?.charWidth
+      const width = text.length * (wanted ?? charWidth)
+      const base = col ? col.start + (own?.dx ?? geometry?.dx ?? 0) : pos
+      const want = col && col.align === 'end' ? Math.max(base, col.end - width) : base
+      const startPos = write(text, width, want)
+      const dy = own?.dy ?? geometry?.dy ?? 0
+      const dx = want - startPos
+      // a monospace font is as wide as it is high: the font size gives the character width that the visible text has
+      const fontSize = wanted && charWidth > 0 ? Math.round(((baseFontSize * wanted) / charWidth) * 100) / 100 : undefined
+      if (dy || fontSize || Math.abs(dx) > 0.25) {
+        const overlay: NativeFindOverlay = { at: out.length - text.length, length: text.length, dx: Math.round(dx * 100) / 100, dy }
+        if (fontSize) overlay.fontSize = fontSize
+        overlays.push(overlay)
+      }
+    })
   }
   return { text: out, overlays }
 }
@@ -241,17 +259,13 @@ export function alignCells(
   return layoutCells(cells, columns, charWidth, quantum).text
 }
 
-/** Row that holds a node and an offset inside a chunk, when the chunk has overlays between its text nodes. Null when the node is not in the chunk. */
+/** Row that holds a node and an offset inside a chunk. The text of a row may lie in spans (see `NativeFindOverlay`), so this counts the line breaks in all the text before the point. Null when the node is not in the chunk. */
 export function rowOfPoint(chunk: Element, node: Node, offset: number, firstRow: number): number | null {
-  let top: Node | null = node
-  while (top && top.parentNode !== chunk) top = top.parentNode
-  if (!top) return null
-  let row = firstRow
-  for (let n = chunk.firstChild; n && n !== top; n = n.nextSibling) {
-    if (n.nodeType === 3) row += countBreaks((n as Text).data, -1)
-  }
-  if (top === node && node.nodeType === 3) row += countBreaks((node as Text).data, offset)
-  return row
+  if (!chunk.contains(node)) return null
+  const range = chunk.ownerDocument.createRange()
+  range.setStart(chunk, 0)
+  range.setEnd(node, node.nodeType === 3 ? offset : Math.min(offset, node.childNodes.length))
+  return firstRow + countBreaks(range.toString(), -1)
 }
 
 function countBreaks(text: string, before: number): number {
@@ -325,43 +339,35 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
     options.columns
       ? layoutCells(options.getRowCells(i), options.columns, charWidth, quantum)
       : { text: cleanLine(options.getRowText(i)), overlays: [] }
-  let overlayChars = 0
-  const lines = Array.from({ length: rowCount }, (_, i) => {
-    const { text, overlays } = layoutOf(i)
-    for (const o of overlays) overlayChars += o.text.length
-    return text
-  })
+  const lines = Array.from({ length: rowCount }, (_, i) => layoutOf(i).text)
   let lower: string[] | null = null // built on the first query that the browser gives us (Firefox only)
 
-  // The content of a chunk: one text node with one line per row and a tab between the cells. A row with a multi-line cell
-  // adds one absolutely placed span per line of the cell, at the place of the cell in the document order.
+  // The content of a chunk: one line of text per row, a tab between the cells. A piece that is drawn away from its place in the
+  // flow (a line of a multi-line cell) is wrapped in an inline span with `position: relative`.
   function fillChunk(d: HTMLElement, first: number, end: number) {
-    let current = ''
-    const flush = () => {
-      if (current) d.append(doc.createTextNode(current))
-      current = ''
+    const append = (text: string) => {
+      const last = d.lastChild
+      if (last && last.nodeType === 3) (last as Text).data += text
+      else d.append(doc.createTextNode(text))
     }
     for (let i = first; i < end; i++) {
-      if (i > first) current += '\n'
+      if (i > first) append('\n')
       const line = lines[i]
       if (!options.columns) {
-        current += line
+        append(line)
         continue
       }
-      const { overlays } = layoutOf(i)
       let p = 0
-      for (const o of overlays) {
-        current += line.slice(p, o.at)
-        p = o.at
-        flush()
+      for (const o of layoutOf(i).overlays) {
+        append(line.slice(p, o.at))
         const span = doc.createElement('span')
-        span.style.cssText = `position:absolute;left:${o.x}px;top:${(i - first) * rowHeight + o.dy}px${o.fontSize ? `;font-size:${o.fontSize}px` : ''}`
-        span.textContent = o.text
+        span.style.cssText = `position:relative;left:${o.dx}px;top:${o.dy}px${o.fontSize ? `;font-size:${o.fontSize}px` : ''}`
+        span.textContent = line.slice(o.at, o.at + o.length)
         d.append(span)
+        p = o.at + o.length
       }
-      current += line.slice(p)
+      append(line.slice(p))
     }
-    flush()
   }
 
   // One hidden chunk per `per` rows: one text node, one line per row, a tab between the cells.
@@ -382,7 +388,7 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
     fragment.append(d)
   }
   host.append(fragment)
-  const textLength = lines.reduce((n, l) => n + l.length + 1, 0) + overlayChars
+  const textLength = lines.reduce((n, l) => n + l.length + 1, 0)
   const buildMs = win.performance.now() - startedAt
 
   // "full": every chunk is in the page. "sparse": a browser that gives the typed text through the selection (Firefox)
@@ -435,7 +441,7 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
   }
 
   function setQuery(q: string) {
-    lower ??= lines.map((_, i) => cellsOf(i).join('\t').toLowerCase())
+    lower ??= lines.map((l) => l.toLowerCase())
     const set = chunksOfQuery(lower, q, per, sparseMax)
     mode = set && set.size ? 'sparse' : 'full'
     keep = set ?? new Set()
@@ -526,26 +532,13 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
         if (audited.has(ck)) continue
         audited.add(ck)
         const base = Number(ck.getAttribute(CHUNK_ATTR)) * per
-        // The chunk is text nodes (the lines, one per row) with an absolutely placed span for each line of a multi-line cell.
-        const flow: string[] = ['']
-        const over: string[][] = [[]]
-        for (let child = ck.firstChild; child; child = child.nextSibling) {
-          if (child.nodeType === 3) {
-            ;(child as Text).data.toLowerCase().split('\n').forEach((part, j) => {
-              if (j > 0) {
-                flow.push('')
-                over.push([])
-              }
-              flow[flow.length - 1] += part
-            })
-          } else over[over.length - 1].push((child.textContent ?? '').toLowerCase())
-        }
-        for (let k = 0; k < flow.length; k++) {
+        // The chunk text is one line per row. Spans (see `NativeFindOverlay`) lie inside the lines.
+        const ls = (ck.textContent ?? '').toLowerCase().split('\n')
+        for (let k = 0; k < ls.length; k++) {
           const row = base + k
-          const wantOver = row < rowCount ? layoutOf(row).overlays.map((o) => o.text.toLowerCase()) : []
-          if ((flow[k] !== lines[row]?.toLowerCase() || over[k].join('\n') !== wantOver.join('\n')) && corrupt.length < 5) corrupt.push(row)
-          for (const piece of [...flow[k].split('\t'), ...over[k]]) {
-            const c = occurrences(piece)
+          if (ls[k] !== lines[row]?.toLowerCase() && corrupt.length < 5) corrupt.push(row)
+          for (const cell of ls[k].split('\t')) {
+            const c = occurrences(cell)
             if (c) {
               total += c
               seen.set(row, (seen.get(row) ?? 0) + c)

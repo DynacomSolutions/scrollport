@@ -117,45 +117,54 @@ describe('layoutCells (multi-line cells)', () => {
     { start: 120, end: 300, lines: [{ dx: 30, dy: -7 }, { dx: 30, dy: 9 }] },
     { start: 320, end: 400 },
   ]
+  const pieces = (text: string) => text.split(/\t+/)
 
-  it('keeps the lines of a multi-line cell out of the row text and gives their place', () => {
+  it('writes the lines of a multi-line cell into the row text, in the order of the cell', () => {
+    const { text } = layoutCells(['ab', ['@ann', 'Ann Lee'], 'ef'], cols, 8, 20)
+    expect(pieces(text)).toEqual(['ab', '@ann', 'Ann Lee', 'ef'])
+  })
+
+  it('returns an overlay for each line that must lie away from its place in the flow', () => {
     const { text, overlays } = layoutCells(['ab', ['@ann', 'Ann Lee'], 'ef'], cols, 8, 20)
-    expect(text.split(/\t+/)).toEqual(['ab', 'ef'])
-    expect(overlays).toEqual([
-      { at: 3, text: '@ann', x: 150, dy: -7 },
-      { at: 3, text: 'Ann Lee', x: 150, dy: 9 },
-    ])
+    expect(overlays).toHaveLength(2)
+    expect(overlays.map((o) => text.slice(o.at, o.at + o.length))).toEqual(['@ann', 'Ann Lee'])
+    expect(overlays.map((o) => o.dy)).toEqual([-7, 9])
   })
 
-  it('puts the overlays at the place of the cell in the row text, so the match order is the cell order', () => {
-    const { text, overlays } = layoutCells(['ab', ['one', 'two'], 'ef'], cols, 8, 20)
-    const at = overlays[0].at
-    expect(text.slice(0, at).replace(/\t/g, '')).toBe('ab')
-    expect(text.slice(at).replace(/\t/g, '')).toBe('ef')
-    expect(overlays.map((o) => o.at)).toEqual([at, at])
+  it('moves a line to the exact left edge of its visible text', () => {
+    // the first line wants x 150 (column start 120 + dx 30): the flow puts it at a tab stop, the overlay moves it the rest
+    const { text, overlays } = layoutCells(['ab', ['@ann', 'Ann Lee'], 'ef'], cols, 8, 20)
+    const starts = cellStarts(text, 8, 20)
+    expect(starts[1] + overlays[0].dx).toBeCloseTo(150, 1)
+    expect(starts[2] + overlays[1].dx).toBeCloseTo(150, 1) // the second line comes after the first in the flow and is moved back
   })
 
-  it('does not move the next cell: an overlay uses no width in the row text', () => {
-    const plain = layoutCells(['ab', '', 'ef'], cols, 8, 20).text
-    const multi = layoutCells(['ab', ['a very long first line of text', 'and a long second line'], 'ef'], cols, 8, 20).text
-    expect(multi.replace(/\t/g, '').length).toBe(plain.replace(/\t/g, '').length)
-    expect(cellStarts(multi, 8, 20).slice(-1)).toEqual(cellStarts(plain, 8, 20).slice(-1))
+  it('does not change where the next cell starts compared with the lines in the flow', () => {
+    const { text } = layoutCells(['ab', ['one', 'two'], 'ef'], cols, 8, 20)
+    const starts = cellStarts(text, 8, 20)
+    expect(Math.abs(starts[3] - 320)).toBeLessThanOrEqual(10)
   })
 
   it('right aligns a line at the end of the cell', () => {
     const c: NativeFindColumn[] = [{ start: 100, end: 300, align: 'end', lines: [{ dy: -5 }, { dy: 5 }] }]
-    const { overlays } = layoutCells([['ab', 'abcd']], c, 8, 20)
-    expect(overlays.map((o) => o.x)).toEqual([300 - 16, 300 - 32])
+    const { text, overlays } = layoutCells([['ab', 'abcd']], c, 8, 20)
+    const starts = cellStarts(text, 8, 20)
+    expect(starts[0] + (overlays[0]?.dx ?? 0)).toBeCloseTo(300 - 16, 1)
+    expect(starts[1] + (overlays[1]?.dx ?? 0)).toBeCloseTo(300 - 32, 1)
   })
 
   it('lets a line give its own place, for a text that does not start at the start of the cell', () => {
     const c: NativeFindColumn[] = [{ start: 100, end: 300, lines: [{ dx: 10, dy: -4 }] }]
-    const { overlays } = layoutCells([[{ text: 'a', dx: 18 }, { text: 'b', dy: 6 }, 'c']], c, 8, 20)
-    expect(overlays.map((o) => [o.text, o.x, o.dy])).toEqual([
-      ['a', 118, -4], // own dx, dy of the column line 0
-      ['b', 100, 6], // own dy, no dx
-      ['c', 100, 0], // no geometry for line 2
+    const { text, overlays } = layoutCells([[{ text: 'a', dx: 18 }, { text: 'b', dy: 6 }, 'c']], c, 8, 20)
+    const starts = cellStarts(text, 8, 20)
+    expect(overlays.map((o) => [text.slice(o.at, o.at + o.length), o.dy])).toEqual([
+      ['a', -4], // own dx, dy of the column line 0
+      ['b', 6], // own dy, no dx
+      ['c', 0], // no geometry: the start of the column, moved back from its place after 'b'
     ])
+    expect(starts[0] + overlays[0].dx).toBeCloseTo(118, 1)
+    expect(starts[1] + overlays[1].dx).toBeCloseTo(100, 1)
+    expect(starts[2] + overlays[2].dx).toBeCloseTo(100, 1)
   })
 
   it('gives a font size that makes a line as wide as the visible text', () => {
@@ -163,24 +172,25 @@ describe('layoutCells (multi-line cells)', () => {
     const c: NativeFindColumn[] = [{ start: 0, end: 200, lines: [{ charWidth: 6 }, {}] }]
     const { overlays } = layoutCells([['abcd', 'efgh']], c, 8, 20)
     expect(overlays[0].fontSize).toBe(9)
-    expect(overlays[1].fontSize).toBeUndefined()
+    expect(overlays.some((o) => o.fontSize === undefined && o.dy === 0 && Math.abs(o.dx) < 1e-6)).toBe(false)
   })
 
-  it('right aligns a line by the width of the visible text', () => {
-    const c: NativeFindColumn[] = [{ start: 0, end: 200, align: 'end', lines: [{ charWidth: 5 }] }]
-    const { overlays } = layoutCells([['abcd']], c, 8, 20)
-    expect(overlays[0].x).toBe(180)
+  it('uses the width of the visible text, not of the index, for a font size line in the flow', () => {
+    const c: NativeFindColumn[] = [{ start: 0, end: 200, lines: [{ charWidth: 6 }] }]
+    const { text, overlays } = layoutCells([['abcd'], 'x'], c, 8, 20)
+    expect(text).toBe('\tabcd\tx'.replace('\tabcd', 'abcd'))
+    expect(overlays[0].length).toBe(4)
   })
 
   it('writes a plain string in a multi-line column as a normal cell', () => {
     const { text, overlays } = layoutCells(['ab', 'Department Summary', 'ef'], cols, 8, 20)
     expect(overlays).toEqual([])
-    expect(text.split(/\t+/)).toEqual(['ab', 'Department Summary', 'ef'])
+    expect(pieces(text)).toEqual(['ab', 'Department Summary', 'ef'])
   })
 
-  it('removes tabs and line breaks inside a line, and uses a line without geometry at dy 0', () => {
-    const { overlays } = layoutCells([['a\tb', 'c\nd', 'third']], [{ start: 10, end: 100, lines: [{ dy: -3 }] }], 8, 20)
-    expect(overlays.map((o) => [o.text, o.dy])).toEqual([['a b', -3], ['c d', 0], ['third', 0]])
+  it('removes tabs and line breaks inside a line', () => {
+    const { text } = layoutCells([['a\tb', 'c\nd', 'third']], [{ start: 10, end: 100, lines: [{ dy: -3 }] }], 8, 20)
+    expect(pieces(text).filter(Boolean)).toEqual(['a b', 'c d', 'third'])
   })
 })
 
@@ -510,28 +520,43 @@ describe('createNativeFind', () => {
         (find = createNativeFind({ scroller, host, rowCount: 250, rowHeight: RH, rowTop: 50, charWidth: 8, rowsPerChunk: PER, getRowCells: mcells, columns: MCOLS, ...extra }))
       const spans = (k: number) => [...chunk(k)!.querySelectorAll<HTMLElement>(':scope > span')]
 
-      it('puts each line of the cell in an absolutely placed span, at the place of the line on screen', () => {
+      it('wraps each moved line in an inline span with position relative, and keeps it in the row text', () => {
         make3()
         const s = spans(1) // rows 100 to 199
         expect(s).toHaveLength(200)
         expect(s[0].textContent).toBe('@user100')
-        expect(s[0].style.left).toBe('170px') // column start 140 + dx 30
-        expect(s[0].style.top).toBe(`${0 * RH - 7}px`) // first row of the chunk, 7 px above the centre
+        expect(s[0].style.position).toBe('relative')
+        expect(s[0].style.top).toBe('-7px')
         expect(s[1].textContent).toBe('Name 100')
-        expect(s[1].style.top).toBe(`${0 * RH + 9}px`)
-        expect(s[2].style.top).toBe(`${1 * RH - 7}px`) // the next row
-        expect(s[0].style.position).toBe('absolute')
+        expect(s[1].style.top).toBe('9px')
+        expect(s[2].style.top).toBe('-7px') // the next row
+        expect(chunk(1)!.textContent!.split('\n')[0].split(/\t+/).filter(Boolean)).toEqual(['id100', '@user100', 'Name 100', 'mail100@x'])
       })
 
-      it('keeps one text line per row and puts the spans between the cells of the row', () => {
+      it('moves a span to the left edge of the visible text with its left offset', () => {
         make3()
-        const c = chunk(0)!
-        const text = [...c.childNodes].filter((n) => n.nodeType === 3).map((n) => (n as Text).data).join('')
-        expect(text.split('\n')).toHaveLength(100)
-        // document order of row 7: id7, the two lines, mail7
-        const order = [...c.childNodes].map((n) => n.textContent).join('|')
-        expect(order).toContain('@user7|Name 7|')
-        expect(text.split('\n')[7].replace(/\t+/g, ' ').trim()).toBe('id7 mail7@x')
+        const line = chunk(1)!.textContent!.split('\n')[0]
+        const starts = [...line.matchAll(/[^\t]+/g)].map((m) => m.index)
+        expect(starts).toHaveLength(4)
+        const s = spans(1)
+        // flow position of the handle plus the left offset is column start 140 + dx 30
+        let pos = 0
+        let handleStart = -1
+        for (let i = 0; i < line.length; i++) {
+          if (line[i] === '\t') {
+            const next = (Math.floor(pos / 20 + 1e-6) + 1) * 20
+            pos = next - pos < 4 - 1e-6 ? next + 20 : next
+          } else {
+            if (i === starts[1]) handleStart = pos
+            pos += 8
+          }
+        }
+        expect(handleStart + parseFloat(s[0].style.left)).toBeCloseTo(170, 1)
+      })
+
+      it('keeps one text line per row', () => {
+        make3()
+        expect(chunk(0)!.textContent!.split('\n')).toHaveLength(100)
       })
 
       it('writes a plain string in a multi-line column as a normal cell, with no span', () => {
@@ -550,7 +575,7 @@ describe('createNativeFind', () => {
         expect(find.audit('user150name').total).toBe(0)
       })
 
-      it('reports a chunk whose spans no longer match the data', () => {
+      it('reports a chunk whose text no longer matches the data', () => {
         make3()
         spans(2)[3].textContent = 'tampered'
         expect(find.audit('user').corrupt.length).toBeGreaterThan(0)
@@ -564,10 +589,11 @@ describe('createNativeFind', () => {
         document.getSelection()!.setBaseAndExtent(node, 0, node, 4)
         document.dispatchEvent(new Event('selectionchange'))
         expect(onActiveRow).toHaveBeenLastCalledWith(120)
-        const flow = chunk(1)!.childNodes
-        const t = [...flow].filter((n) => n.nodeType === 3 && (n as Text).data.includes('mail130'))[0] as Text
-        const at = t.data.indexOf('mail130')
-        document.getSelection()!.setBaseAndExtent(t, at, t, at + 4)
+        const walker = document.createTreeWalker(chunk(1)!, NodeFilter.SHOW_TEXT)
+        let t: Text | null = null
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) if ((n as Text).data.includes('mail130')) t = n as Text
+        const at = t!.data.indexOf('mail130')
+        document.getSelection()!.setBaseAndExtent(t!, at, t!, at + 4)
         document.dispatchEvent(new Event('selectionchange'))
         expect(onActiveRow).toHaveBeenLastCalledWith(130)
       })

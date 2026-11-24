@@ -160,10 +160,11 @@ describe('VirtualGridTable with native find', () => {
     const chunk = el.querySelector('[data-sp-chunk="0"]')!
     const spans = [...chunk.querySelectorAll<HTMLElement>(':scope > span')]
     expect(spans.map((sp) => sp.textContent).slice(0, 4)).toEqual(['@name0', 'Name of 0', '@name1', 'Name of 1'])
-    expect(spans[0].style.left).toBe('50px') // cell padding 20 px + dx 30
+    expect(spans[0].style.position).toBe('relative')
     expect(spans[0].style.top).toBe('-7px')
-    expect(spans[3].style.top).toBe(`${46 + 9}px`) // the second row of the chunk
-    const text = [...chunk.childNodes].filter((n) => n.nodeType === 3).map((n) => (n as Text).data).join('')
-    expect(text.split('\n')[1].split(/\t+/).filter(Boolean)).toEqual(['Oslo']) // the lines are not in the row text
+    expect(spans[1].style.top).toBe('9px')
+    // the lines are in the row text, in the order of the cell, before the next cell
+    const row1 = chunk.textContent!.split('\n')[1]
+    expect(row1.split(/\t+/).filter(Boolean)).toEqual(['@name1', 'Name of 1', 'Oslo'])
   })
 })
