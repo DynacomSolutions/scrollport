@@ -91,17 +91,18 @@ const columns: ColumnDef<User>[] = [
 How it works:
 
 - The row text is **one line per row of the row model**, in the order that the table shows it: after sorting, filtering and expanding. A tree table indexes the group row and its expanded sub rows. Collapsed rows are not in the index.
-- The cells of a line are **placed at the column edges** with tab characters. The index font is monospace, so the width of a text is known. The line of a row therefore puts every cell within half a tab stop (10 px) of the real cell. Right aligned (numeric) columns align to the right edge.
+- The cells of a line are **placed at the column edges** with tab characters. The index font is monospace, so the width of a text is known. The line of a row therefore puts every cell within half a tab stop (5 px at the default of 10 px) of the start of the real text. Right aligned (numeric) columns align to the right edge. Browsers skip a tab stop that is closer than half a character (checked in Chromium 157 and Firefox 160). The layout follows this rule, or every later cell of the row would move by one tab stop.
+- A cell that shows **several lines** (the user cell: a handle above a name) gives its text as an array of lines. The index does not write these lines into the row text. It puts each line in an absolutely placed span at the exact place of the visible line: `ColumnMeta.findLines` gives, for each line, the distance from the start of the cell text (`dx`) and from the centre of the row (`dy`), and the average width of one character (`charWidth`, so the highlight is as wide as the visible text). A line can also give its own `dx` and `dy`: the demo uses this for the indent of sub rows, the chevron of group rows and the padding of pills. The spans use no width in the row, so they never move the next cell. In the document order they lie at the place of their cell, so Enter still walks the matches left to right, top to bottom.
 - The index text is **transparent** and lies over the real cells. The real cells draw their text with `IndexedText`: the text is in the page but `inert`, so the find bar does not count it. Without this, each row in view would match twice.
 - A find hit opens its chunk and the browser scrolls the table (down and across) to the match. The browser highlight of the match is then painted over the real cell, with the matched characters in the text colour.
 - The index is built again when the rows change (sort, filter, expand, new data) or a column changes size. Cell texts are kept per row, so a sort or a filter only joins them again.
 - `nativeFind` gives every column the width of its `size`. A flexible column (`1fr`) would move the cells away from the index. A table that is narrower than its columns total leaves the free space empty on the right.
 
-Cost of the demo (100000 users, 25 columns, 100007 rows with the group rows), measured in Chromium 157 on a Linux host (16 cores) at two loads:
+Cost of the demo (100000 users, 25 columns, 100007 rows with the group rows), measured in Chromium 157 on a Linux host (16 cores) at two loads. The other rows of this table were measured with the 20 px tab stop (text 39.1 MB); the 10 px stop adds about 27% text and was not measured again for time and heap:
 
 | What | Value |
 |---|---|
-| Index text in the page | 39.1 MB in 1001 chunks (the 6 column grid demo: about 4 MB) |
+| Index text in the page | 50.2 MB in 1001 chunks with the default 10 px tab stop (39.5 MB with 20 px). The 6 column grid demo: about 4 MB |
 | First build, with the formatting of all cells | 3.3 to 4.5 s at a host load average of 60. 13.8 s at a load average of 300 |
 | Build again after a sort, a collapse or an expand | 1.3 to 1.8 s (2 to 4 s from the click to the new index) |
 | JS heap, fresh browser | 0.7 GB after the load. Each build again adds about 0.3 GB until the next garbage collection (0.9 GB after one) |
@@ -122,10 +123,10 @@ The build runs on the main thread. During a build the page does not respond. Cha
 | `rowCount` | `number` | Number of rows. |
 | `rowHeight` | `number` | Row height in px. The index uses it as its line height. |
 | `getRowText` | `(row) => string` | Text of one row. Separate the cells with a tab. Line breaks become spaces. Use this (a visible index) or `getRowCells` with `columns`. |
-| `getRowCells` | `(row) => string[]` | Text of the cells of one row, for a transparent index over rows that draw their own text. Tabs and line breaks in a cell become spaces. |
-| `columns` | `{ start, end, align? }[]` | Text area of each column in px from the left edge of the host. `align: 'end'` for right aligned cells. Needed with `getRowCells`. |
+| `getRowCells` | `(row) => (string \| (string \| { text, dx?, dy?, charWidth? })[])[]` | Text of the cells of one row, for a transparent index over rows that draw their own text. Tabs and line breaks in a cell become spaces. A cell is a string (placed at the start of its column) or an array of lines. Each line is placed exactly (see `columns`). |
+| `columns` | `{ start, end, align?, lines? }[]` | Text area of each column in px from the left edge of the host. `align: 'end'` for right aligned cells. `lines[k]` is `{ dx?, dy?, charWidth? }` for line `k` of a multi-line cell: `dx` from `start`, `dy` from the centre of the row (negative is up), `charWidth` the average width of a visible character. Needed with `getRowCells`. |
 | `rowTop` | `number` | Distance from the top of the host to row 0, for example a sticky header. Default 0. |
-| `tabQuantum` | `number` | Distance between tab stops of the transparent index in px. Smaller is more exact and costs more text. Default 20. |
+| `tabQuantum` | `number` | Distance between tab stops of the transparent index in px. Smaller is more exact and costs more text. Default 20 (the table uses 10: `findTabQuantum`). |
 | `charWidth` | `number` | Width of one index character in px. Measured when not set. |
 | `zIndex` | `number` | `z-index` of the transparent index. It must be above the cells and below a sticky header. Default 1. |
 | `rowsPerChunk` | `number` | Default 100. |
@@ -136,7 +137,7 @@ The build runs on the main thread. During a build the page does not respond. Cha
 
 The returned object has `mode` (`'full'` or `'sparse'`), `query` (the find text, only in Firefox), `chunkCount`, `textLength` (characters of index text), `buildMs`, `attachedChunks`, `reset()`, `audit(query)` and `destroy()`. `audit` counts what native find can match for a query and compares it with the data. The tests use it.
 
-The module also exports the pure helpers `chunkCount`, `chunkOfRow`, `rowsOfChunk`, `rowAtOffset`, `chunksOfQuery`, `cleanLine`, `cleanCell` and `alignCells` (the line of a transparent index).
+The module also exports the pure helpers `chunkCount`, `chunkOfRow`, `rowsOfChunk`, `rowAtOffset`, `rowOfPoint`, `chunksOfQuery`, `cleanLine`, `cleanCell`, `alignCells` (the line of a transparent index) and `layoutCells` (the line and the placed lines).
 
 ### `useFindIndex`, `IndexedText`, `useNativeFind` and `NativeFindGrid` (`react.tsx`)
 
@@ -164,20 +165,38 @@ The old regression set walks Enter presses at several speeds past the end of a m
 
 Failed runs (all kept in the proof files): Chromium `qx7r0050000` typed at 30 ms, run 3: the bar was right (`1/1`) but the active mark was yellow, so the rig did not find it. Firefox `qx7r005` typed at 100 ms, runs 2 and 3: the bar said "1 of 1" instead of "More than 1,000 matches", and the row was right.
 
+### Table (`?demo=table`, 100000 rows, 25 columns)
+
+Same method: real find bar, real key presses, screenshots of the bar. Each run types or pastes one query, presses Enter 34 times, then 83 more (117 in all, 33 ms apart), and compares the bar and the row of the active match with an independent model of the table. Queries: a user handle in the first, a middle and the last row (2 matches each: the user cell and the e-mail cell), `bennett81` (100 matches) and `berlin` (12536 matches). States: plain (30 runs), sorted by ID (6) and filtered by `berlin` (6). A fresh browser for each run. Host load average 25 to 300 (mostly 30 to 110). "Main" is the build before this change (576497a), run in the same hours.
+
+| State | Chromium 157, this build | Chromium 157, main | Firefox 160, this build | Firefox 160, main |
+|---|---|---|---|---|
+| Plain | 26 of 30 | 27 of 30 | 12 of 30 | 10 of 30 |
+| Sorted | 6 of 6 | not run | 2 of 6 | 2 of 6 |
+| Filtered | 6 of 6 | not run | 0 of 6 | 0 of 6 |
+| `NativeFindGrid` far rows (70 runs) | 70 of 70 | not run | 66 of 70 | 67 of 70 |
+| `NativeFindGrid` regression set | 21 of 21 | not run | 22 of 22 (+ control line) | 21 of 22 |
+
+The failed Chromium runs are all one case: a handle with 2 matches in the same row (user cell and e-mail cell), where the bar says `2/2` instead of `1/2` after 34 presses. The row is right. Main shows the same case (`amelia.bailey108`: 3 of 30 runs). The failed Firefox runs are the three classes under "Known limits".
+
 Safari, macOS and mobile browsers are not tested.
 
 ## Known limits
 
-- **Firefox, more than 1000 matches.** Firefox shows "More than 1,000 matches". It does not give a total. In about 1 search in 10 on a busy machine the bar shows "1 of 1" instead, while the highlighted row is right. The cause is in Firefox: a new count request ends the older one early. A page cannot switch this off.
-- **Firefox, many fast Enter presses at a wrap.** When the list of matches wraps (the last match, then the first), Firefox sometimes loses an Enter press or restarts its counter ("1 of 1"). The highlighted match is always real: the bar and the row agree. In the 100000 row table, with 33 ms between presses, 7 of 30 searches matched the expected position (Chromium 157: 28 of 30). With 10000 rows it was 12 of 20. With 1000 ms between presses it was 2 of 4. PR 1's own grid shows the same fault with few matches (10 matches: 12 of 16 runs passed on its build, 16 of 16 on this build in the same hour), so it is Firefox behaviour and not table specific. A person who presses Enter slowly is not affected.
+- **Firefox, the match counter in a big document.** Three faults, all seen on a plain static page with no script and no Scrollport (`10000` and `100000` rows of one `div` each, a word in 9, 99 or 1999 rows, real Enter presses 33 ms apart):
+  1. A query with 2 matches in one row: the bar is one off (`2 of 2` instead of `1 of 2`) after 34 presses. The row is right.
+  2. A query with about 100 matches: after the wrap at the last match, the bar shows a wrong number (`10 of 99` instead of `19 of 99`).
+  3. A query with more than 1000 matches: the bar sometimes shows `1 of 1` instead of "More than 1,000 matches".
+
+  Firefox receives every Enter press and finds the next match for each one (its own find log shows 117 presses and 118 find results). The fault is in its match counter. Firefox starts a new count for every press. All counts share one result object, and a count that ends late reports the numbers of an older press (the log shows `0 of 0` and `1 of 1` between the right numbers). A count takes 0.3 to 6 s in a big document, much longer than 33 ms. The plain page shows that it depends on the size of the document and the speed of the presses: 1000 rows are right in 3 of 3 runs, 10000 rows are right in most runs, 100000 rows fail in 3 of 3 runs, and 100000 rows with 1000 ms between presses are right in 4 of 4 runs (300 ms: 0 of 4, 100 ms: 2 of 4). A person who presses Enter slowly, or a page with a small document, does not see it. The page cannot avoid it: all row text must be in the DOM. Turning sparse mode off made the 100 match query worse (the bar showed `1 of 1` already after 34 presses, and 20 presses were lost). Turning the scroll handling off gave no clear gain (4 rounds of 2 queries, same fault classes). Scrollport changes nothing in Firefox's counter: the table results of this build and of main are the same within the noise (Firefox 12 of 30 against 10 of 30 in plain).
 - **Firefox, slow typing.** An earlier test page with the same index failed the "slow typing, then many Enter presses past the end of a short match list" case in 3 of 3 runs. This build passed it in its one run. Treat it as not settled.
 - **Chromium, stall after repeated loads of the 100000 row table.** In one test, a Chromium renderer that had loaded the sorted demo table 3 times (8 GB resident, host load 100 to 300) stopped answering after the search text was typed. The find bar never showed a count, and the thread was inside Chrome's own code (the debugger could not interrupt it). A fresh browser for each run passed. It is not proven whether a normal host shows it.
 - **Chrome, rare faults.** In about 1 search in 14 for a query with one match, the mark can be yellow or the bar can start at `0/1` (1 run in 70 in the last test). A pasted query starts at `2` in about 1 in 70. On Chrome 155 the first Enter walk lost presses in some runs. The cause is not proven. A plain page without Scrollport showed the paste fault too.
 - **It does not scale to millions of rows.** Native find can match only text that is in the DOM. 100000 rows of 6 short columns are about 4 MB of text. The rich table demo (100000 users, 25 columns) is 39 MB of text and about 1 GB of JS heap (see "A table with rich cells"). The cost grows with rows and columns. A server-backed table cannot use this method: Chrome never tells the page the find text, so a page cannot load the right rows on demand.
-- **Plain text only.** The index holds text. In a table the real cells draw links, avatars and pills, and the index lies over them as transparent text. A cell that shows several lines (the user cell: a handle and a name) has one index line, so the highlight lies between the two lines.
+- **Plain text only.** The index holds text. In a table the real cells draw links, avatars and pills, and the index lies over them as transparent text. A cell with several lines needs its lines and their places (`findText` and `findLines`). Without them the index writes the cell as one line at the centre of the row.
 - **Table cell text is inert.** The real cells use `IndexedText`. Inert text cannot be selected with the mouse and assistive technology does not read it. Give the row another accessible name if you need this. Firefox finds text that CSS draws with `::before`, so CSS text does not work as a replacement.
 - **The table index follows the rows of the row model.** Collapsed group rows, rows that are filtered out and card mode (a narrow screen) are not searchable. The index is built again when the rows change.
-- **The highlight lies within half a tab stop (10 px) of the real cell, if the index text fits.** The index width of a text is its length times the width of a monospace character. A very wide character (CJK, emoji) or a text that is wider than its column moves the later cells of that row to the right. The columns must have a fixed width (`nativeFind` sets it). The two sticky columns stick when the table is scrolled across: a match in one of them is highlighted at its place in the scroll, not at the sticky place.
+- **The highlight lies within half a tab stop (5 px) of the start of the real text, if the index text fits.** The index font is monospace and the cells use a proportional font, so a highlight is as wide as the index text, not as the real text: the difference is about 1 px per character, and the demo corrects the user lines with `charWidth`. A very wide character (CJK, emoji) or a text that is wider than its column moves the later cells of that row to the right. The columns must have a fixed width (`nativeFind` sets it). The two sticky columns stick when the table is scrolled across: a match in one of them is highlighted at its place in the scroll, not at the sticky place.
 - **No column headers in `NativeFindGrid`.** The grid draws row backgrounds and the index text. Columns are fixed-width tab stops. (`VirtualGridTable` has headers.)
 - **Not tested:** Safari, macOS, mobile.
 
