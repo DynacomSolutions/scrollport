@@ -526,6 +526,7 @@ describe('createNativeFind', () => {
         expect(s).toHaveLength(200)
         expect(s[0].textContent).toBe('@user100')
         expect(s[0].style.position).toBe('relative')
+        expect(s[0].style.lineHeight).toBe('0') // a span must not make its line taller: the rows would drift
         expect(s[0].style.top).toBe('-7px')
         expect(s[1].textContent).toBe('Name 100')
         expect(s[1].style.top).toBe('9px')

@@ -361,7 +361,7 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
       for (const o of layoutOf(i).overlays) {
         append(line.slice(p, o.at))
         const span = doc.createElement('span')
-        span.style.cssText = `position:relative;left:${o.dx}px;top:${o.dy}px${o.fontSize ? `;font-size:${o.fontSize}px` : ''}`
+        span.style.cssText = `position:relative;line-height:0;left:${o.dx}px;top:${o.dy}px${o.fontSize ? `;font-size:${o.fontSize}px` : ''}`
         span.textContent = line.slice(o.at, o.at + o.length)
         d.append(span)
         p = o.at + o.length
