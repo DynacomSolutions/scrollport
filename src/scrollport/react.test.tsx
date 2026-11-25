@@ -72,7 +72,7 @@ describe('NativeFindGrid', () => {
     }
 
     const order = (n: number) => Array.from({ length: n }, (_, i) => i)
-    const lineOf = (row: number) => (el.querySelector('[data-sp-chunk="0"]')!.firstChild as Text).data.split('\n')[row].split(/\t+/)
+    const lineOf = (row: number) => el.querySelector('[data-sp-chunk="0"]')!.textContent!.split('\n')[row].split(/\t+/)
 
     it('builds the index inside the host, next to the rows that the table draws', () => {
       render(<Table order={order(50)} />)
@@ -90,7 +90,7 @@ describe('NativeFindGrid', () => {
       expect(lineOf(0)).toEqual(['id49', 'odd'])
       const filtered = order(50).filter((n) => n % 10 === 0)
       act(() => root!.render(<Table order={filtered} />))
-      expect((el.querySelector('[data-sp-chunk="0"]')!.firstChild as Text).data.split('\n')).toHaveLength(5)
+      expect(el.querySelector('[data-sp-chunk="0"]')!.textContent!.split('\n')).toHaveLength(5)
     })
 
     it('reports each build and each removal through onFind', () => {

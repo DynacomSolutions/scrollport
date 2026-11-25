@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   alignCells,
   layoutCells,
+  type NativeFindFont,
+  type NativeFindFontMetrics,
   chunkCount,
   chunkOfRow,
   chunksOfQuery,
@@ -67,6 +69,74 @@ function cellStarts(line: string, cw: number, q: number): number[] {
     }
   }
   return out
+}
+
+/**
+ * Where each piece of a laid out line starts in px (the cells, in order), when the pieces with a font are as wide as `width` says
+ * and the rest is monospace. A piece that follows another one without a tab is not a cell of its own: use `posAt` for it.
+ */
+function flowStarts(
+  text: string,
+  overlays: { at: number; length: number; font?: NativeFindFont; margin?: number }[],
+  cw: number,
+  q: number,
+  width: (font: NativeFindFont, piece: string) => number,
+  spaceFont?: NativeFindFont,
+  skip?: number,
+): number[] {
+  const out: number[] = []
+  let start = -1
+  walk(text, overlays, cw, q, width, spaceFont, (_i, pos, isText) => {
+    if (!isText) start = -1
+    else if (start < 0) {
+      start = pos
+      out.push(start)
+    }
+  }, skip)
+  return out
+}
+
+/** The flow position in px of the character at `at`. */
+function posAt(text: string, overlays: { at: number; length: number; font?: NativeFindFont; margin?: number }[], cw: number, q: number, width: (font: NativeFindFont, piece: string) => number, at: number, spaceFont?: NativeFindFont): number {
+  let found = NaN
+  walk(text, overlays, cw, q, width, spaceFont, (i, pos) => {
+    if (i === at) found = pos
+  })
+  return found
+}
+
+function walk(
+  text: string,
+  overlays: { at: number; length: number; font?: NativeFindFont; margin?: number }[],
+  cw: number,
+  q: number,
+  width: (font: NativeFindFont, piece: string) => number,
+  spaceFont: NativeFindFont | undefined,
+  visit: (index: number, pos: number, isText: boolean) => void,
+  skip = cw / 2,
+) {
+  let pos = 0
+  let i = 0
+  while (i < text.length) {
+    const ch = text[i]
+    if (ch === '\t') {
+      visit(i, pos, false)
+      const before = pos
+      pos = (Math.floor(pos / q + 1e-6) + 1) * q
+      if (pos - before < skip - 1e-6) pos += q
+      i++
+      continue
+    }
+    const o = overlays.find((x) => x.at === i && x.font)
+    visit(i, pos, true)
+    if (o && o.font) {
+      pos += width(o.font, text.slice(i, i + o.length)) + (o.margin ?? 0)
+      i += o.length
+    } else {
+      pos += ch === ' ' && spaceFont ? width(spaceFont, ' ') : cw
+      i++
+    }
+  }
 }
 
 describe('alignCells', () => {
@@ -167,19 +237,79 @@ describe('layoutCells (multi-line cells)', () => {
     expect(starts[2] + overlays[2].dx).toBeCloseTo(100, 1)
   })
 
-  it('gives a font size that makes a line as wide as the visible text', () => {
-    // the index font is 12 px with a character width of 8 px here: a visible text of 6 px per character needs 9 px
-    const c: NativeFindColumn[] = [{ start: 0, end: 200, lines: [{ charWidth: 6 }, {}] }]
-    const { overlays } = layoutCells([['abcd', 'efgh']], c, 8, 20)
-    expect(overlays[0].fontSize).toBe(9)
-    expect(overlays.some((o) => o.fontSize === undefined && o.dy === 0 && Math.abs(o.dx) < 1e-6)).toBe(false)
+  // Fake font metrics: a character of font size `size` is `size / 2` px wide, the baseline lies 0.3 of the size under the centre.
+  const f12: NativeFindFont = { family: 'x', size: 12 }
+  const metrics: NativeFindFontMetrics = {
+    base: f12,
+    width: (font, text) => text.length * font.size * 0.5,
+    baseline: (font) => (font ? font.size * 0.3 : 3.6),
+    space: (font) => font.size / 2,
+    zero: (font) => font.size * 0.6,
+    kernAfterSpace: () => 0,
+  }
+  const f16: NativeFindFont = { family: 'x', size: 16 }
+  const f10: NativeFindFont = { family: 'x', size: 10 }
+
+  it('gives the font of the visible text to each piece, so the highlight has the real width', () => {
+    const c: NativeFindColumn[] = [{ start: 0, end: 300, lines: [{ font: f16, dy: -7 }, { font: f10, dy: 9 }] }]
+    const { overlays } = layoutCells([['abcd', 'efgh']], c, 8, 20, metrics)
+    expect(overlays.map((o) => o.font)).toEqual([f16, f10])
   })
 
-  it('uses the width of the visible text, not of the index, for a font size line in the flow', () => {
-    const c: NativeFindColumn[] = [{ start: 0, end: 200, lines: [{ charWidth: 6 }] }]
-    const { text, overlays } = layoutCells([['abcd'], 'x'], c, 8, 20)
-    expect(text).toBe('\tabcd\tx'.replace('\tabcd', 'abcd'))
-    expect(overlays[0].length).toBe(4)
+  it('moves a piece so that its baseline lies on the baseline of the visible line', () => {
+    // font 16: the baseline is 4.8 under the line centre, the row text baseline is 3.6: the piece moves 1.2 down (and dy)
+    const c: NativeFindColumn[] = [{ start: 0, end: 300, lines: [{ font: f16, dy: -7 }, { font: f10, dy: 9 }] }]
+    const { overlays } = layoutCells([['abcd', 'efgh']], c, 8, 20, metrics)
+    expect(overlays.map((o) => o.dy)).toEqual([-5.8, 8.4]) // -7 + 4.8 - 3.6, 9 + 3 - 3.6
+  })
+
+  it('takes the font of the column for a plain cell and keeps its place at the start of the column', () => {
+    const c: NativeFindColumn[] = [{ start: 100, end: 300, font: f16 }]
+    const { text, overlays } = layoutCells(['hello'], c, 8, 20, metrics)
+    const starts = flowStarts(text, overlays, 8, 20, metrics.width)
+    expect(overlays).toHaveLength(1)
+    expect(overlays[0].font).toBe(f16)
+    expect(starts[0] + overlays[0].dx).toBeCloseTo(100, 1)
+  })
+
+  it('right aligns a text by its measured width, not by the index width', () => {
+    const c: NativeFindColumn[] = [{ start: 100, end: 300, align: 'end', font: f10 }]
+    const { text, overlays } = layoutCells(['12345'], c, 8, 20, metrics)
+    const starts = flowStarts(text, overlays, 8, 20, metrics.width)
+    expect(starts[0] + overlays[0].dx).toBeCloseTo(300 - 25, 1) // 5 characters of 5 px
+  })
+
+  it('puts a line after the line before it with a gap, by the measured width', () => {
+    const c: NativeFindColumn[] = [{ start: 100, end: 400 }]
+    const { text, overlays } = layoutCells([[{ text: 'abcd', dx: 10, font: f16 }, { text: 'xy', gap: 8, font: f10 }]], c, 8, 20, metrics)
+    const at = (k: number) => posAt(text, overlays, 8, 20, metrics.width, overlays[k].at)
+    expect(at(0) + overlays[0].dx).toBeCloseTo(110, 1)
+    expect(at(1) + overlays[1].dx).toBeCloseTo(110 + 32 + 8, 1) // 4 characters of 8 px, then the gap
+    expect(text.slice(text.indexOf('abcd'))).toBe('abcdxy') // no tab between the two lines: a match can run over both
+  })
+
+  it('keeps the next cell on its tab stop when the real width differs a little from the measured width, in both browsers', () => {
+    const c: NativeFindColumn[] = [{ start: 0, end: 200, font: f16 }, { start: 200, end: 400, font: f16 }]
+    const q = 10
+    // Chromium skips a stop closer than half a space (3 px here), Firefox a stop closer than half of 1ch (3.6 px here)
+    for (const skip of [3, 3.6]) {
+      for (const word of ['abcdefg', 'abcdefgh', 'abcdefghi', 'abc', 'abcd', 'abcde']) {
+        const laid = layoutCells([word, 'z'], c, 6, q, metrics)
+        const second = (delta: number) =>
+          flowStarts(laid.text, laid.overlays, 6, q, (f, t) => metrics.width(f, t) + delta, f12, skip)[1]
+        for (const delta of [-0.5, 0, 0.5]) expect(second(delta)).toBe(second(0))
+        expect(second(0)).toBeGreaterThanOrEqual(200 - 1)
+      }
+    }
+  })
+
+  it('puts a piece in the font of the row text within 1 px of the left edge of the visible text, with tabs and spaces', () => {
+    const c: NativeFindColumn[] = [{ start: 103, end: 300, font: f12 }]
+    const laid = layoutCells(['hello'], c, 6, 10, metrics)
+    expect(laid.overlays).toEqual([]) // no span: the text lies in the row text
+    const start = posAt(laid.text, laid.overlays, 6, 10, metrics.width, laid.text.indexOf('hello'), f12)
+    expect(Math.abs(start - 103)).toBeLessThanOrEqual(1)
+    expect(laid.text).toMatch(/^\t+ *hello$/)
   })
 
   it('writes a plain string in a multi-line column as a normal cell', () => {
@@ -525,12 +655,12 @@ describe('createNativeFind', () => {
         const s = spans(1) // rows 100 to 199
         expect(s).toHaveLength(200)
         expect(s[0].textContent).toBe('@user100')
-        expect(s[0].style.position).toBe('relative')
-        expect(s[0].style.lineHeight).toBe('0') // a span must not make its line taller: the rows would drift
-        expect(s[0].style.top).toBe('-7px')
+        expect(getComputedStyle(s[0]).position).toBe('relative') // from the class of the span
+        expect(getComputedStyle(s[0]).lineHeight).toBe('0') // a span must not make its line taller: the rows would drift
+        expect(getComputedStyle(s[0]).top).toBe('-7px')
         expect(s[1].textContent).toBe('Name 100')
-        expect(s[1].style.top).toBe('9px')
-        expect(s[2].style.top).toBe('-7px') // the next row
+        expect(getComputedStyle(s[1]).top).toBe('9px')
+        expect(getComputedStyle(s[2]).top).toBe('-7px') // the next row
         expect(chunk(1)!.textContent!.split('\n')[0].split(/\t+/).filter(Boolean)).toEqual(['id100', '@user100', 'Name 100', 'mail100@x'])
       })
 
@@ -552,7 +682,7 @@ describe('createNativeFind', () => {
             pos += 8
           }
         }
-        expect(handleStart + parseFloat(s[0].style.left)).toBeCloseTo(170, 1)
+        expect(handleStart + parseFloat(getComputedStyle(s[0]).left)).toBeCloseTo(170, 1)
       })
 
       it('keeps one text line per row', () => {
