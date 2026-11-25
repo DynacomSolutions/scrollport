@@ -24,14 +24,15 @@ export type ColumnMeta<TData extends object = object> = {
   /**
    * The text that the cell shows, for native find. Needed for a cell that draws more than the plain value (a formatted
    * number, a name with a handle). Without it the index holds `String(row.getValue(columnId))`.
-   * A cell with several lines (a handle above a name), or a text that does not start at the start of the cell (an indent, a
-   * pill), gives an array of lines (`NativeFindCell`). The column gives `findLines`, or each line gives its own `dx` and `dy`.
+   * A cell with several lines (a handle above a name), a text that does not start at the start of the cell (an indent, a
+   * pill) or a text in another font than the other cells gives an array of lines (`NativeFindCell`). The column gives `findLines`,
+   * or each line gives its own `dx`, `baseline` and `font`.
    */
   findText?: (row: Row<TData>) => NativeFindCell
   /**
    * Where the lines of a multi-line cell lie (see `NativeFindColumn.lines`): the distance from the start of the cell text
-   * to the text of the line, and from the centre of the row to the centre of the line. Needed with a `findText` that
-   * gives an array. The index puts each line at that place, so the find highlight lies on the visible line.
+   * to the text of the line, the baseline of the line from the centre of the row, and its font. Needed with a `findText` that
+   * gives an array. The index draws each line in that font at that place, so the find highlight covers the visible line.
    */
   findLines?: readonly NativeFindLine[]
 }
@@ -69,8 +70,8 @@ type VirtualGridTableProps<TData extends object> = {
    */
   nativeFind?: boolean
   /**
-   * Distance between the tab stops of the native find index in px (default 10). A cell starts within half a tab stop of its true
-   * place. A smaller value is more exact and makes the index text longer (20 px: 39.5 MB, 10 px: 50.2 MB for the demo).
+   * Distance between the tab stops of the native find index in px (default 10). A smaller value needs fewer spaces to bring a text to
+   * its exact place and makes the index text longer. The index puts spaces (4 px each) after the tabs, so 10 px gives a place within 1 px.
    */
   findTabQuantum?: number
   /** Called with the find index when it is ready and with `null` when it is gone. Pass a stable function. */
@@ -288,7 +289,7 @@ export function VirtualGridTable<TData extends object>({
   const findEnabled = nativeFind && resolvedDisplayMode === 'table'
   // The font and the baseline of a cell: the index draws the text of a cell in this font, on this baseline, so the find highlight
   // lies on the visible text. A copy of a cell that is not on screen gives them.
-  const findText = useMemo<{ font: NativeFindFont; baseline: number }>(() => {
+  const findStyle = useMemo<{ font: NativeFindFont; baseline: number }>(() => {
     const cell = document.createElement('div')
     cell.className = 'td'
     cell.style.cssText = `position:absolute;visibility:hidden;width:200px;height:${rowHeight}px`
@@ -343,8 +344,8 @@ export function VirtualGridTable<TData extends object>({
     rowTop: table.getHeaderGroups().length * rowHeight,
     getRowCells,
     columns: findColumns,
-    font: findText.font,
-    baseline: findText.baseline,
+    font: findStyle.font,
+    baseline: findStyle.baseline,
     tabQuantum: findTabQuantum,
     // above the cells (`z-index` 24 for sticky cells), below the header (30)
     zIndex: 26,

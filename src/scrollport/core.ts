@@ -174,7 +174,7 @@ export type NativeFindBase = {
    * The index draws its text in this font, so a find highlight has the width of the real text. Default: a monospace font.
    */
   font?: NativeFindFont
-  /** Distance between the tab stops of the transparent index in px. Smaller is more exact and costs more text. Default 20. */
+  /** Distance between the tab stops of the transparent index in px. Smaller needs fewer spaces to place a text exactly and costs more tabs. Default 20 (the table uses 10). */
   tabQuantum?: number
   /** `z-index` of the transparent index. It must lie over the cells that it covers. Default 1. */
   zIndex?: number
