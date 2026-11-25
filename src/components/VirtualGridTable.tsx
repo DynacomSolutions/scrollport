@@ -13,7 +13,7 @@ import {
   type SortingState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import type { NativeFind, NativeFindCell, NativeFindColumn, NativeFindLine } from '../scrollport/core'
+import { readNativeFindBaseline, readNativeFindFont, type NativeFind, type NativeFindCell, type NativeFindColumn, type NativeFindFont, type NativeFindLine } from '../scrollport/core'
 import { useFindIndex } from '../scrollport/react'
 
 export type ColumnMeta<TData extends object = object> = {
@@ -35,6 +35,9 @@ export type ColumnMeta<TData extends object = object> = {
    */
   findLines?: readonly NativeFindLine[]
 }
+
+/** Default row height in px. */
+export const DEFAULT_ROW_HEIGHT = 46
 
 /** Horizontal padding of a cell in rem (the `.td` rule in `styles.css`). */
 const CELL_PADDING_REM = 1.25
@@ -83,7 +86,7 @@ export function VirtualGridTable<TData extends object>({
   getRowId,
   getSubRows,
   storageKey,
-  rowHeight = 46,
+  rowHeight = DEFAULT_ROW_HEIGHT,
   edgeGutter = 0,
   isSubheaderRow,
   canSubheaderStick,
@@ -283,13 +286,32 @@ export function VirtualGridTable<TData extends object>({
   // Native find. The index holds the text of every row of the row model, in the order that the table shows it. It is
   // built again when the rows change (sort, filter, expand, new data) or a column changes size.
   const findEnabled = nativeFind && resolvedDisplayMode === 'table'
+  // The font and the baseline of a cell: the index draws the text of a cell in this font, on this baseline, so the find highlight
+  // lies on the visible text. A copy of a cell that is not on screen gives them.
+  const findText = useMemo<{ font: NativeFindFont; baseline: number }>(() => {
+    const cell = document.createElement('div')
+    cell.className = 'td'
+    cell.style.cssText = `position:absolute;visibility:hidden;width:200px;height:${rowHeight}px`
+    const leaf = document.createElement('span')
+    cell.append(leaf)
+    document.body.append(cell)
+    const font = readNativeFindFont(leaf)
+    const { baseline } = readNativeFindBaseline(cell, leaf)
+    cell.remove()
+    return { font, baseline }
+  }, [rowHeight])
   const findColumns = useMemo<NativeFindColumn[]>(() => {
     const padding = CELL_PADDING_REM * (parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16)
     let left = edgeGutter
     return visibleColumns.map((column) => {
       const size = column.getSize()
       const meta = (column.columnDef.meta ?? {}) as ColumnMeta<TData>
-      const out: NativeFindColumn = { start: left + padding, end: left + size - padding, align: meta.numeric ? 'end' : 'start', lines: meta.findLines }
+      const out: NativeFindColumn = {
+        start: left + padding,
+        end: left + size - padding,
+        align: meta.numeric ? 'end' : 'start',
+        lines: meta.findLines,
+      }
       left += size
       return out
     })
@@ -321,6 +343,8 @@ export function VirtualGridTable<TData extends object>({
     rowTop: table.getHeaderGroups().length * rowHeight,
     getRowCells,
     columns: findColumns,
+    font: findText.font,
+    baseline: findText.baseline,
     tabQuantum: findTabQuantum,
     // above the cells (`z-index` 24 for sticky cells), below the header (30)
     zIndex: 26,

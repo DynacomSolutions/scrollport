@@ -560,6 +560,8 @@ body {
   font-size: 0.93rem;
   color: #1f2936;
   overflow: hidden;
+  /* Digits have one width in every column, so the native find index can draw all cells in one font. */
+  font-variant-numeric: tabular-nums;
 }
 
 .cell-numeric {

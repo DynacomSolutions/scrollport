@@ -9,8 +9,8 @@ import {
   type OmniSearchPill,
   type OmniSearchState,
 } from './components/OmniSearchBar'
-import { VirtualGridTable, type ColumnMeta, type TableDisplayMode } from './components/VirtualGridTable'
-import type { NativeFind, NativeFindCell, NativeFindLine } from './scrollport/core'
+import { DEFAULT_ROW_HEIGHT, VirtualGridTable, type ColumnMeta, type TableDisplayMode } from './components/VirtualGridTable'
+import { readNativeFindBaseline, readNativeFindFont, type NativeFind, type NativeFindCell, type NativeFindLine } from './scrollport/core'
 import { IndexedText } from './scrollport/react'
 import { publishFindTest } from './demo/findTest'
 
@@ -151,42 +151,58 @@ function includesInsensitive(value: string, query: string): boolean {
 }
 
 /**
- * The two-line user cell: an avatar, then a handle above a name. The cell and the native find index read these numbers, so
- * the find highlight lies on the visible line. The cell draws the numbers (inline styles), the index gets them as
- * `ColumnMeta.findLines`: `dx` from the start of the cell text to the start of the line, `dy` from the centre of the row to
- * the centre of the line (the two lines together are centred in the row).
+ * The two-line user cell: an avatar, then a handle above a name. The cell draws these numbers (inline styles). The native find
+ * index draws the handle and the name in the font of their lines, at the place of their lines (`cellFonts.userPrimary`).
  */
 const USER_CELL = { avatar: 22, gapRem: 0.55, primaryLine: 18, secondaryLine: 14 }
 
 // Offsets of cell texts from the start of the cell, in rem, as the CSS of the demo sets them (`.subrow-indent`, `.pill`).
 const SUBROW_INDENT_REM = 1.15
-const PILL_PADDING_REM = 0.5
+const GROUP_GAP_REM = 0.5 // `.group-toggle` gap
 const remPx = (rem: number) => rem * (parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16)
-// The group row: the text starts after the chevron and its gap (15.2 px at a root font size of 16 px, measured in Chromium and Firefox).
-const GROUP_TEXT_DX_REM = 0.95
 
-/** Average width of one character of a sample text in a cell element with `className`, in px. The cell font decides it. */
-function measureCharWidth(className: string, sample: string): number {
+/**
+ * Puts a copy of the HTML of a cell on a place that is not on screen, and reads from the element that `selector` finds in it: the
+ * font, the distance from the start of the cell text to the start of the text, and the baseline of the text from the centre of the
+ * row. The native find index draws each text in this font, at this place, so the find highlight covers the real glyphs.
+ */
+function probeCell(html: string, selector: string): NativeFindLine {
   const cell = document.createElement('div')
   cell.className = 'td'
-  cell.style.cssText = 'position:absolute;visibility:hidden;display:block;height:auto;padding:0'
-  const line = document.createElement('div')
-  line.className = className
-  line.style.cssText = 'display:inline-block'
-  line.textContent = sample
-  cell.append(line)
+  cell.style.cssText = `position:absolute;visibility:hidden;width:400px;height:${DEFAULT_ROW_HEIGHT}px`
+  cell.innerHTML = html
   document.body.append(cell)
-  const width = line.getBoundingClientRect().width / sample.length
+  const leaf = cell.querySelector(selector) as HTMLElement
+  const font = readNativeFindFont(leaf)
+  const { baseline, left } = readNativeFindBaseline(cell, leaf)
+  const result = { font, baseline, dx: left - remPx(1.25) }
   cell.remove()
-  return width
+  return result
+}
+
+const probeCache = new Map<string, NativeFindLine>()
+const probed = (html: string, selector: string): NativeFindLine => {
+  const key = `${html}|${selector}`
+  let hit = probeCache.get(key)
+  if (!hit) probeCache.set(key, (hit = probeCell(html, selector)))
+  return hit
+}
+
+const USER_HTML = `<div class="user-cell" style="gap:${USER_CELL.gapRem}rem"><img alt="" style="width:${USER_CELL.avatar}px;height:${USER_CELL.avatar}px"><div><div class="user-primary" style="line-height:${USER_CELL.primaryLine}px">@amelia</div><div class="user-secondary" style="line-height:${USER_CELL.secondaryLine}px">Amelia</div></div></div>`
+const GROUP_HTML = '<span class="sticky-surface"><button class="group-toggle" type="button"><span class="chevron">▸</span><strong>Sales</strong><span class="group-count">1 users</span></button></span>'
+
+/** The font, the place and the baseline of the texts that are not in the plain style of a cell. Measured in the page, on first use. */
+const cellText = {
+  userPrimary: () => probed(USER_HTML, '.user-primary'),
+  userSecondary: () => probed(USER_HTML, '.user-secondary'),
+  pill: () => probed('<span class="pill pill-active">Active</span>', '.pill'),
+  summary: () => probed('<span class="summary-label">Mixed</span>', '.summary-label'),
+  groupName: () => probed(GROUP_HTML, 'strong'),
+  groupCount: () => probed(GROUP_HTML, '.group-count'),
 }
 
 function userCellFindLines(): NativeFindLine[] {
-  const dx = USER_CELL.avatar + remPx(USER_CELL.gapRem)
-  return [
-    { dx, dy: -USER_CELL.secondaryLine / 2, charWidth: measureCharWidth('user-primary', '@amelia.bailey108') },
-    { dx, dy: USER_CELL.primaryLine / 2, charWidth: measureCharWidth('user-secondary', 'Amelia Bailey') },
-  ]
+  return [cellText.userPrimary(), cellText.userSecondary()]
 }
 
 function highlightText(text: string, query: string): ReactNode {
@@ -665,7 +681,13 @@ function App() {
         meta: { fixed: true, minPx: 220, sticky: true },
         text: (row) => (row.rowType === 'department' ? `${row.department} ${row.userCount} users` : row.department),
         // the text of a sub row starts after an indent, the text of a group row after the chevron
-        lines: (row) => [{ text: row.rowType === 'department' ? `${row.department} ${row.userCount} users` : row.department, dx: row.rowType === 'department' ? remPx(GROUP_TEXT_DX_REM) : remPx(SUBROW_INDENT_REM) }],
+        lines: (row) =>
+          row.rowType === 'department'
+            ? [
+                { text: row.department, ...cellText.groupName() },
+                { text: ` ${row.userCount} users`, ...cellText.groupCount(), dx: undefined, gap: remPx(GROUP_GAP_REM) },
+              ]
+            : [{ text: row.department, dx: remPx(SUBROW_INDENT_REM) }],
         cell: (row) =>
           isGroup(row) ? (
             <button className="group-toggle" type="button" onClick={row.getToggleExpandedHandler()}>
@@ -694,7 +716,7 @@ function App() {
         // Two lines: the handle above the name. The index puts each line on the visible line (see USER_CELL).
         meta: { fixed: true, minPx: 220, sticky: true, findLines: userCellFindLines() },
         text: (row) => (row.rowType === 'department' ? 'Department Summary' : `@${row.username} ${row.fullName}`),
-        lines: (row) => (row.rowType === 'department' ? 'Department Summary' : [`@${row.username}`, row.fullName]),
+        lines: (row) => (row.rowType === 'department' ? [{ text: 'Department Summary', ...cellText.summary() }] : [`@${row.username}`, row.fullName]),
         cell: (row) =>
           isGroup(row) ? (
             summary('Department Summary')
@@ -723,7 +745,8 @@ function App() {
         minSize: 120,
         meta: { minPx: 120 },
         text: (row) => (row.rowType === 'department' ? 'Mixed' : row.status),
-        lines: (row) => (row.rowType === 'department' ? 'Mixed' : [{ text: row.status, dx: remPx(PILL_PADDING_REM) }]), // the pill pads its text
+        lines: (row) =>
+          row.rowType === 'department' ? [{ text: 'Mixed', ...cellText.summary() }] : [{ text: row.status, ...cellText.pill() }], // the pill pads its text
         cell: (row, text) =>
           isGroup(row) ? (
             summary('Mixed')
@@ -738,7 +761,8 @@ function App() {
         minSize: 120,
         meta: { minPx: 120 },
         text: (row) => (row.rowType === 'department' ? 'Mixed' : row.plan),
-        lines: (row) => (row.rowType === 'department' ? 'Mixed' : [{ text: row.plan, dx: remPx(PILL_PADDING_REM) }]),
+        lines: (row) =>
+          row.rowType === 'department' ? [{ text: 'Mixed', ...cellText.summary() }] : [{ text: row.plan, ...cellText.pill() }],
         cell: (row, text) =>
           isGroup(row) ? summary('Mixed') : <span className="pill pill-plan">{highlightText(text, rawQuery)}</span>,
       },
@@ -765,6 +789,7 @@ function App() {
         minSize: 210,
         meta: { minPx: 210 },
         text: (row) => (row.rowType === 'department' ? '-' : hostOf(row.website)),
+        lines: (row) => (row.rowType === 'department' ? [{ text: '-', ...cellText.summary() }] : hostOf(row.website)),
         cell: (row, text) =>
           isGroup(row) ? (
             summary('-')
@@ -781,6 +806,7 @@ function App() {
         minSize: 130,
         meta: { minPx: 130 },
         text: (row) => (row.rowType === 'department' ? '-' : 'Open profile'),
+        lines: (row) => (row.rowType === 'department' ? [{ text: '-', ...cellText.summary() }] : 'Open profile'),
         cell: (row, text) =>
           isGroup(row) ? (
             summary('-')
