@@ -98,15 +98,17 @@ How it works:
 - The index is built again when the rows change (sort, filter, expand, new data) or a column changes size. Cell texts are kept per row, so a sort or a filter only joins them again.
 - `nativeFind` gives every column the width of its `size`. A flexible column (`1fr`) would move the cells away from the index. A table that is narrower than its columns total leaves the free space empty on the right.
 
-Cost of the demo (100000 users, 25 columns, 100007 rows with the group rows), measured in Chromium 157 on a Linux host (16 cores) at two loads. The other rows of this table were measured with the 20 px tab stop (text 39.1 MB); the 10 px stop adds about 27% text and was not measured again for time and heap:
+Cost of the demo (100000 users, 25 columns, 100007 rows with the group rows), measured on 25 Nov 2026 in Chromium 157 and Firefox 160 on a Linux host (16 cores) at a load average of 40 to 100. Main (before the font based layout) and this build were loaded in turns, 3 times for main and 2 times for this build:
 
-| What | Value |
-|---|---|
-| Index text in the page | 50.2 MB in 1001 chunks with the default 10 px tab stop (39.5 MB with 20 px). The 6 column grid demo: about 4 MB |
-| First build, with the formatting of all cells | 3.3 to 4.5 s at a host load average of 60. 13.8 s at a load average of 300 |
-| Build again after a sort, a collapse or an expand | 1.3 to 1.8 s (2 to 4 s from the click to the new index) |
-| JS heap, fresh browser | 0.7 GB after the load. Each build again adds about 0.3 GB until the next garbage collection (0.9 GB after one) |
-| Memory, all processes of the browser | 2.2 GB in a fresh browser. A renderer that loaded the page 3 times reached 6 to 8 GB |
+| What | Main (monospace index) | This build (font of the text) |
+|---|---|---|
+| Index text in the page | 39.1 MB | 54.4 MB (Chromium), 51.8 MB (Firefox) |
+| Spans in the index | 0 | 620000 (Chromium), 693000 (Firefox) |
+| First build of the index, Chromium | 3.5 to 3.8 s | 8.7 to 9.0 s |
+| First build of the index, Firefox | 3.3 to 3.4 s | 8.7 to 9.1 s |
+| JS heap after the load, Chromium | 0.70 GB | 0.52 GB |
+
+The font based layout costs about 2.5 times the build time and 40% more text, because the width of every text is measured and a text moves to its place with spaces and spans. One Firefox content process held 8 GB after 6 loads of the page in the same browser (2.7 GB after one load). A style on each span (an inline `style`) made Firefox spend more than 10 minutes on the 693000 spans: the spans share CSS classes now, and Firefox builds in 9 s. The earlier measures of the sort, collapse and expand (1.3 to 1.8 s) and of the browser memory (2.2 GB in a fresh browser) are for the monospace index and were not measured again.
 
 The build runs on the main thread. During a build the page does not respond. Changing the data while the find bar is open ends the current find: the old chunks leave the page.
 
@@ -173,13 +175,15 @@ Same method: real find bar, real key presses, screenshots of the bar. Each run t
 
 | State | Chromium 157, this build | Chromium 157, main | Firefox 160, this build | Firefox 160, main |
 |---|---|---|---|---|
-| Plain | 26 of 30 | 27 of 30 | 12 of 30 | 10 of 30 |
-| Sorted | 6 of 6 | not run | 2 of 6 | 2 of 6 |
-| Filtered | 6 of 6 | not run | 0 of 6 | 0 of 6 |
-| `NativeFindGrid` far rows (70 runs) | 70 of 70 | not run | 66 of 70 | 67 of 70 |
-| `NativeFindGrid` regression set | 21 of 21 | not run | 22 of 22 (+ control line) | 21 of 22 |
+| Plain | 22 of 30 | 29 of 30 | 11 of 30 | 10 of 30 |
+| Sorted | 6 of 6 | 6 of 6 | 1 of 6 | 1 of 6 |
+| Filtered | 6 of 6 | 6 of 6 | 0 of 6 | 0 of 6 |
+| `NativeFindGrid` far rows (70 runs) | 65 of 70 | 65 of 70 | 67 of 70 | 68 of 70 |
+| `NativeFindGrid` regression set | 21 of 21 | 21 of 21 | 21 of 22 (+ control line) | 21 of 22 (+ control line) |
 
-The failed Chromium runs are all one case: a handle with 2 matches in the same row (user cell and e-mail cell), where the bar says `2/2` instead of `1/2` after 34 presses. The row is right. Main shows the same case (`amelia.bailey108`: 3 of 30 runs). The failed Firefox runs are the three classes under "Known limits".
+Run on 25 Nov 2026 at a host load average of 40 to 270, the two builds of a browser in turns (this build on one sway display, main on another, at the same hours). The grid far row failures of Chromium are the same in the two builds (`qx7r` and `berlin`, a bar that reads a count too early under load).
+
+**Chromium, 2 matches in one row.** The 8 failed Chromium plain runs of this build are one case: a handle with 2 matches in the same row (the user cell and the e-mail cell: `isabella.campbell186` 5 of 6 runs, `amelia.bailey108` 3 of 6). The bar says `2/2` instead of `1/2` after 34 presses. The row is right, so only the count in the bar is wrong. Main shows 0 of 12 on these two queries in this run (3 of 30 in an earlier run). The first version of this change had the same case in 4 of 30 runs. Test builds (the 25 Nov runs, 2 to 4 runs of the query `isabella.campbell186` each): with no span in the index the case did not appear (4 of 4 runs passed); with spans only on the user lines it appeared (3 of 3 runs failed); with spans that only have a font, or only `position: relative`, or `display: inline-block` it still appeared; with spans on everything except the user lines it did not appear (4 of 4 passed). So Chromium 157 miscounts when a match lies inside a span of the index text and another match lies in the same block. Neither the font nor the offset alone is the cause. The highlight lies on the right text; only the `N/M` count can be off by one for a row that holds 2 matches.
 
 Safari, macOS and mobile browsers are not tested.
 
