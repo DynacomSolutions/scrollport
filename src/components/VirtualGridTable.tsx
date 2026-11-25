@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   flexRender,
   getCoreRowModel,
@@ -431,7 +431,19 @@ export function VirtualGridTable<TData extends object>({
     return `minmax(${minPx}px, 1fr)`
   }
 
-  const renderedTracks = renderIndices.map((index) => trackForIndex(index))
+  // A column that is not rendered (it lies between two rendered columns, for example under the sticky columns) leaves a gap: an empty
+  // track of its width keeps the columns on their places, so the cells stay where the native find index expects them.
+  const gapBefore = (position: number): number => {
+    if (position === 0) return 0
+    const previous = renderIndices[position - 1]
+    return Math.max(0, colStarts[renderIndices[position]] - (colStarts[previous] + (visibleColumns[previous]?.getSize() ?? 0)))
+  }
+  const renderedTracks = renderIndices.flatMap((index, position) => {
+    const gap = gapBefore(position)
+    return gap > 0 ? [`${gap}px`, trackForIndex(index)] : [trackForIndex(index)]
+  })
+  const renderCells = (render: (index: number) => ReactNode): ReactNode[] =>
+    renderIndices.flatMap((index, position) => (gapBefore(position) > 0 ? [<div key={`gap-${index}`} aria-hidden="true" />, render(index)] : [render(index)]))
   const gridTemplateColumns = `${edgeGutter}px ${leftPad}px ${renderedTracks.join(' ')} ${rightPad}px ${edgeGutter}px`
 
   const stickyStyle = (stickyLeft: number): CSSProperties =>
@@ -546,7 +558,7 @@ export function VirtualGridTable<TData extends object>({
             <div className="edge-col edge-start sticky-edge sticky-edge-start" aria-hidden="true" />
             <div aria-hidden="true" />
 
-            {renderIndices.map((index) => {
+            {renderCells((index) => {
               const column = visibleColumns[index]
               const header = headerGroup.headers[column.getIndex()]
               const meta = (column.columnDef.meta ?? {}) as ColumnMeta
@@ -627,7 +639,7 @@ export function VirtualGridTable<TData extends object>({
               <div className="edge-col edge-start sticky-edge sticky-edge-start" aria-hidden="true" />
               <div aria-hidden="true" />
 
-              {renderIndices.map((index) => {
+              {renderCells((index) => {
                 const column = visibleColumns[index]
                 const cell = activeStickySubheaderRow.getVisibleCells().find((candidate) => candidate.column.id === column.id)
                 const meta = (column.columnDef.meta ?? {}) as ColumnMeta
@@ -688,7 +700,7 @@ export function VirtualGridTable<TData extends object>({
               <div className="edge-col edge-start sticky-edge sticky-edge-start" aria-hidden="true" />
               <div aria-hidden="true" />
 
-              {renderIndices.map((index) => {
+              {renderCells((index) => {
                 const column = visibleColumns[index]
                 const cell = cellsByColumnId.get(column.id)
                 const meta = (column.columnDef.meta ?? {}) as ColumnMeta
