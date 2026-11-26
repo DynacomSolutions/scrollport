@@ -13,7 +13,7 @@ import {
   type SortingState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { readNativeFindBaseline, readNativeFindFont, type NativeFind, type NativeFindCell, type NativeFindColumn, type NativeFindFont, type NativeFindLine } from '../scrollport/core'
+import { plainCellText, readNativeFindBaseline, readNativeFindFont, type NativeFind, type NativeFindCell, type NativeFindColumn, type NativeFindFont, type NativeFindLine } from '../scrollport/core'
 import { useFindIndex } from '../scrollport/react'
 
 export type ColumnMeta<TData extends object = object> = {
@@ -70,8 +70,16 @@ type VirtualGridTableProps<TData extends object> = {
    */
   nativeFind?: boolean
   /**
-   * Distance between the tab stops of the native find index in px (default 10). A smaller value needs fewer spaces to bring a text to
-   * its exact place and makes the index text longer. The index puts spaces (4 px each) after the tabs, so 10 px gives a place within 1 px.
+   * Draw the native find index in the font of the visible text and put each line of a multi-line cell on its visible line (see
+   * `ColumnMeta.findText`), so the find highlight covers the real glyphs. Default false: the index is then a monospace line of
+   * text for each row with one line for each cell, which is smaller and quicker to build (about 2.5 times) and has no inline spans, but the highlight
+   * lies only near the visible text. The font based index puts some of its text in inline spans. Chromium 157 can lose the active
+   * match or show a wrong count in its find bar on a query with two matches in one row when one of them lies in such a span (see the README).
+   */
+  findFontMatch?: boolean
+  /**
+   * Distance between the tab stops of the native find index in px. Default 10 with `findFontMatch` (the index puts spaces, 4 px each,
+   * after the tabs, so 10 px gives a place within 1 px), and the default of the index (20) without it.
    */
   findTabQuantum?: number
   /** Called with the find index when it is ready and with `null` when it is gone. Pass a stable function. */
@@ -98,7 +106,8 @@ export function VirtualGridTable<TData extends object>({
   onSortingChange,
   autoScrollX = 'off',
   nativeFind = false,
-  findTabQuantum = 10,
+  findFontMatch = false,
+  findTabQuantum,
   onFind,
   defaultExpanded = false,
 }: VirtualGridTableProps<TData>) {
@@ -289,7 +298,8 @@ export function VirtualGridTable<TData extends object>({
   const findEnabled = nativeFind && resolvedDisplayMode === 'table'
   // The font and the baseline of a cell: the index draws the text of a cell in this font, on this baseline, so the find highlight
   // lies on the visible text. A copy of a cell that is not on screen gives them.
-  const findStyle = useMemo<{ font: NativeFindFont; baseline: number }>(() => {
+  const findStyle = useMemo<{ font: NativeFindFont; baseline: number } | null>(() => {
+    if (!findFontMatch || !findEnabled) return null
     const cell = document.createElement('div')
     cell.className = 'td'
     cell.style.cssText = `position:absolute;visibility:hidden;width:200px;height:${rowHeight}px`
@@ -300,7 +310,7 @@ export function VirtualGridTable<TData extends object>({
     const { baseline } = readNativeFindBaseline(cell, leaf)
     cell.remove()
     return { font, baseline }
-  }, [rowHeight])
+  }, [rowHeight, findFontMatch, findEnabled])
   const findColumns = useMemo<NativeFindColumn[]>(() => {
     const padding = CELL_PADDING_REM * (parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16)
     let left = edgeGutter
@@ -311,7 +321,7 @@ export function VirtualGridTable<TData extends object>({
         start: left + padding,
         end: left + size - padding,
         align: meta.numeric ? 'end' : 'start',
-        lines: meta.findLines,
+        lines: findFontMatch ? meta.findLines : undefined,
       }
       left += size
       return out
@@ -321,7 +331,7 @@ export function VirtualGridTable<TData extends object>({
   }, [visibleColumns, columnSizing, edgeGutter])
   // The cell texts of a row do not change when the rows move, so they are kept per row (a sort or a filter reuses them).
   // They do change when a column definition or the visible columns change.
-  const findCellCache = useMemo(() => new WeakMap<object, readonly NativeFindCell[]>(), [columns, visibleColumns])
+  const findCellCache = useMemo(() => new WeakMap<object, readonly NativeFindCell[]>(), [columns, visibleColumns, findFontMatch])
   const getRowCells = useCallback(
     (index: number): readonly NativeFindCell[] => {
       const row = rows[index]
@@ -329,13 +339,14 @@ export function VirtualGridTable<TData extends object>({
       if (!cells) {
         cells = visibleColumns.map((column) => {
           const meta = (column.columnDef.meta ?? {}) as ColumnMeta<TData>
-          return meta.findText ? meta.findText(row) : String(row.getValue(column.id) ?? '')
+          const cell = meta.findText ? meta.findText(row) : String(row.getValue(column.id) ?? '')
+          return findFontMatch ? cell : plainCellText(cell)
         })
         findCellCache.set(row.original, cells)
       }
       return cells
     },
-    [rows, visibleColumns, findCellCache],
+    [rows, visibleColumns, findCellCache, findFontMatch],
   )
   useFindIndex(tableContainerRef, tableInnerRef, {
     enabled: findEnabled,
@@ -344,9 +355,9 @@ export function VirtualGridTable<TData extends object>({
     rowTop: table.getHeaderGroups().length * rowHeight,
     getRowCells,
     columns: findColumns,
-    font: findStyle.font,
-    baseline: findStyle.baseline,
-    tabQuantum: findTabQuantum,
+    font: findStyle?.font,
+    baseline: findStyle?.baseline,
+    tabQuantum: findTabQuantum ?? (findFontMatch ? 10 : undefined),
     // above the cells (`z-index` 24 for sticky cells), below the header (30)
     zIndex: 26,
     onFind,

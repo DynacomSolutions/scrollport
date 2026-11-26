@@ -138,7 +138,7 @@ describe('VirtualGridTable with native find', () => {
       },
       columns[2],
     ]
-    render(<VirtualGridTable<Person> tableId="t2" data={people(5)} columns={two} displayMode="table" nativeFind />)
+    render(<VirtualGridTable<Person> tableId="t2" data={people(5)} columns={two} displayMode="table" nativeFind findFontMatch />)
     const chunk = el.querySelector('[data-sp-chunk="0"]')!
     const spans = [...chunk.querySelectorAll<HTMLElement>(':scope > span')]
     expect(spans.map((sp) => sp.textContent).filter((t) => t !== 'Oslo' && t !== 'Rome' && t !== 'Paris').slice(0, 4)).toEqual(['@name0', 'Name of 0', '@name1', 'Name of 1'])
@@ -148,5 +148,31 @@ describe('VirtualGridTable with native find', () => {
     // the lines are in the row text, in the order of the cell, before the next cell
     const row1 = chunk.textContent!.split('\n')[1]
     expect(row1.split(/\t+/).filter(Boolean)).toEqual(['@name1', 'Name of 1', 'Oslo'])
+  })
+
+  it('puts the lines of a multi-line cell in one string, with no span, when findFontMatch is off (the default)', () => {
+    const two: ColumnDef<Person>[] = [
+      {
+        accessorKey: 'name',
+        header: 'Name',
+        size: 200,
+        meta: {
+          fixed: true,
+          findText: (row) => [`@${row.original.name}`, `Name of ${row.original.id}`],
+          findLines: [
+            { dx: 30, dy: -7 },
+            { dx: 30, dy: 9 },
+          ],
+        } as ColumnMeta<Person>,
+        cell: ({ row }) => <IndexedText text={row.original.name} />,
+      },
+      columns[2],
+    ]
+    render(<VirtualGridTable<Person> tableId="t3" data={people(5)} columns={two} displayMode="table" nativeFind />)
+    const chunk = el.querySelector('[data-sp-chunk="0"]')!
+    expect(chunk.querySelectorAll('span')).toHaveLength(0)
+    expect(chunk.children).toHaveLength(0) // one text node for the chunk
+    const row1 = chunk.textContent!.split('\n')[1]
+    expect(row1.split(/\t+/).filter(Boolean)).toEqual(['@name1 Name of 1', 'Oslo'])
   })
 })

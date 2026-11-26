@@ -403,6 +403,20 @@ export function layoutCells(
   return { text: out, overlays }
 }
 
+/**
+ * The plain text of a cell that has lines: the texts of the lines in one string, with a space between two lines. A line that starts
+ * with a space (a joined line) gets no extra space. Use it for an index that is not font based (a monospace index has one line per cell).
+ */
+export function plainCellText(cell: NativeFindCell): string {
+  if (typeof cell === 'string') return cell
+  let out = ''
+  for (const line of cell) {
+    const text = typeof line === 'string' ? line : line.text
+    out += out && !text.startsWith(' ') ? ' ' + text : text
+  }
+  return out
+}
+
 /** The row text of `layoutCells`, for callers that need no overlays. */
 export function alignCells(
   cells: readonly NativeFindCell[],
