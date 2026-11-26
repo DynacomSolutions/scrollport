@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -5,8 +6,20 @@ import { useCallback, useRef } from 'react'
 import { IndexedText, NativeFindGrid, useFindIndex } from './react'
 import type { NativeFindColumn } from './core'
 import type { NativeFind } from './core'
+import gridStyles from './scrollport.css?raw'
+import tableStyles from '../styles.css?raw'
+import demoStyles from '../demo/demo.css?raw'
 
 const row = (i: number) => [`id${i}`, 'x']
+
+it.each(Object.entries({ grid: gridStyles, table: tableStyles, demo: demoStyles }))(
+  'keeps browser find paint out of %s',
+  (_name, source) => {
+    const css = source.replace(/\/\*[\s\S]*?\*\//g, '')
+    expect(css).not.toMatch(/::search-text\b/i)
+    expect(css).not.toMatch(/(?:^|[{},])\s*(?:\*|html|body|:root)?::(?:-moz-)?selection\b|(?:\[data-sp-|\.sp-(?:grid|host|row))[^{}]*::(?:-moz-)?selection\b/i)
+  },
+)
 
 describe('NativeFindGrid', () => {
   let root: Root | undefined
@@ -37,6 +50,22 @@ describe('NativeFindGrid', () => {
     expect(el.querySelectorAll('[data-sp-chunk]')).toHaveLength(5)
     expect(el.querySelector('[data-sp-chunk="4"]')?.textContent?.split('\n')[99]).toBe('id499\tx')
     expect(find!.audit('id499')).toMatchObject({ expected: 1, findable: 1, missing: [] })
+  })
+
+  it('leaves the visible row unchanged when the browser selects an index match', () => {
+    let find: NativeFind | null = null
+    render(<NativeFindGrid rowCount={500} columns={2} getRow={row} onFind={(index) => (find = index)} />)
+    const visibleRow = el.querySelector('[data-row="1"]')!
+    const before = visibleRow.outerHTML
+    const text = el.querySelector('[data-sp-chunk="0"]')!.firstChild as Text
+    const start = text.data.indexOf('id1\t')
+    act(() => {
+      document.getSelection()!.setBaseAndExtent(text, start, text, start + 3)
+      document.dispatchEvent(new Event('selectionchange'))
+    })
+    expect(find!.query).toBe('id1')
+    expect(el.querySelector('[data-row="1"]')?.outerHTML).toBe(before)
+    expect(el.querySelector('mark')).toBeNull()
   })
 
   it('removes the index when it unmounts', () => {

@@ -11,7 +11,7 @@ export type UseFindIndexOptions = Omit<NativeFindBase, 'scroller' | 'host' | 'on
   columns?: readonly NativeFindColumn[]
   /** Build the index. Default true. Use false while the scroller is not in the page. */
   enabled?: boolean
-  /** How long the active row stays marked, in ms. */
+  /** How long the hook reports the active row, in ms. */
   activeRowMs?: number
   /** Called with the core object when it is ready, and with `null` when it is gone. Pass a stable function. */
   onFind?: (find: NativeFind | null) => void
@@ -180,7 +180,7 @@ export function NativeFindGrid(props: NativeFindGridProps) {
       <div
         key={i}
         data-row={i}
-        className={`sp-row${i % 2 ? ' sp-row-odd' : ''}${i === find.activeRow ? ' sp-row-active' : ''}`}
+        className={`sp-row${i % 2 ? ' sp-row-odd' : ''}`}
         style={{ top: i * rowHeight, height: rowHeight }}
       />,
     )

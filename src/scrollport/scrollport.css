@@ -3,8 +3,6 @@
   --sp-bg: #fff;
   --sp-line: #cfd5de;
   --sp-stripe: #f0f3f8;
-  --sp-active: #ffd966;
-  --sp-accent: #1f5fd0;
   position: relative;
   box-sizing: border-box;
   overflow: auto;
@@ -21,8 +19,6 @@
     --sp-bg: #1b2028;
     --sp-line: #343c49;
     --sp-stripe: #222833;
-    --sp-active: #7a5c00;
-    --sp-accent: #6ea4ff;
   }
 }
 
@@ -41,28 +37,4 @@
 
 .sp-row-odd {
   background: var(--sp-stripe);
-}
-
-.sp-row-active {
-  background: var(--sp-active);
-  outline: 2px solid var(--sp-accent);
-  outline-offset: -2px;
-}
-
-/*
- * A match in the transparent index: show its characters over the real cell. A page that styles ::search-text replaces
- * the browser colours, so the colours are set here (the Chrome colours: yellow, and orange for the current match).
- */
-[data-sp-layer='transparent']::search-text {
-  color: var(--sp-fg, #14181f);
-  background-color: #ffff00;
-}
-
-[data-sp-layer='transparent']::search-text:current {
-  color: var(--sp-fg, #14181f);
-  background-color: #ff9632;
-}
-
-[data-sp-layer='transparent']::selection {
-  color: var(--sp-fg, #14181f);
 }

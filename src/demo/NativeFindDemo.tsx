@@ -27,7 +27,7 @@ export default function NativeFindDemo() {
         <ol>
           <li>Press Ctrl+F (Cmd+F on macOS).</li>
           <li>Type or paste an id from the first column, a first name or a city.</li>
-          <li>The find bar shows the true number of matches. Enter walks the rows in order and the grid follows.</li>
+          <li>Read the count in the browser find bar. Press Enter to move to the next match.</li>
         </ol>
         <p>
           <button type="button" onClick={copyExample} title={`Copies one of: ${EXAMPLES.join(', ')}`}>
