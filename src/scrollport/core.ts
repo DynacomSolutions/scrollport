@@ -179,7 +179,7 @@ export type NativeFindBase = {
   /** `z-index` of the transparent index. It must lie over the cells that it covers. Default 1. */
   zIndex?: number
   rowsPerChunk?: number
-  /** Most chunks that a query may touch to switch to sparse mode. */
+  /** Deprecated. The native index keeps all chunks attached for every browser. */
   sparseMaxChunks?: number
   /** Width of one tab stop in px (the column width). */
   tabSize?: number
@@ -212,9 +212,9 @@ export type NativeFind = {
   readonly textLength: number
   /** Time in ms that the index took to build: row text, chunks and DOM. */
   readonly buildMs: number
-  /** Chunks that are in the DOM now. All of them in full mode, a few in sparse mode. */
+  /** Chunks that are in the DOM now. Every chunk stays in the DOM. */
   readonly attachedChunks: number
-  /** Go back to full mode and forget the query. Escape does the same. */
+  /** Forget the query. Escape does the same. */
   reset: () => void
   /** Count what native find can match for `query`, and compare it with the data. For tests. */
   audit: (query: string) => NativeFindAudit
@@ -272,6 +272,7 @@ export function layoutCells(
   charWidth: number,
   quantum: number,
   fonts?: NativeFindFontMetrics,
+  rowTextBaseline = 0,
 ): { text: string; overlays: NativeFindOverlay[] } {
   let out = ''
   let pos = 0
@@ -392,7 +393,7 @@ export function layoutCells(
       const rowBase = fonts?.rowBaseline ?? fonts?.baseline() ?? 0
       const other = font !== undefined && font !== base && fontCss(font) !== fontCss(base as NativeFindFont)
       // how far the baseline of the visible text lies under the baseline of the row text
-      const top = !fonts || !font ? dy : given !== undefined ? given - rowBase : dy + (other || dy ? fonts.baseline(font) - fonts.baseline() : 0)
+      const top = !fonts || !font ? (given !== undefined ? given - rowTextBaseline : dy) : given !== undefined ? given - rowBase : dy + (other || dy ? fonts.baseline(font) - fonts.baseline() : 0)
       let how: 'join' | 'flow' | 'near' = join ? 'join' : 'near'
       let plan: FlowPlan | null = null
       if (!join && font !== undefined && !other && Math.abs(top) < 0.25) {
@@ -494,6 +495,17 @@ function measureCharWidth(host: HTMLElement, font: string): number {
   const width = probe.getBoundingClientRect().width / 200
   probe.remove()
   return width > 0 ? width : 7
+}
+
+function measureLineBaseline(host: HTMLElement, font: string, rowHeight: number): number {
+  const container = host.ownerDocument.createElement('div')
+  container.style.cssText = `position:absolute;left:0;top:0;width:1px;height:${rowHeight}px;overflow:hidden;visibility:hidden;white-space:pre;font:${font};line-height:${rowHeight}px`
+  const leaf = host.ownerDocument.createElement('span')
+  container.append(leaf)
+  host.append(container)
+  const baseline = readNativeFindBaseline(container, leaf).baseline
+  container.remove()
+  return baseline
 }
 
 type FontMeasure = { context: CanvasRenderingContext2D | null; chars: Float64Array; pairs: Map<number, number> }
@@ -671,7 +683,6 @@ let nextIndexId = 0
 export function createNativeFind(options: NativeFindOptions): NativeFind {
   const { scroller, host, rowCount, rowHeight, onActiveRow } = options
   const per = options.rowsPerChunk ?? DEFAULT_ROWS_PER_CHUNK
-  const sparseMax = options.sparseMaxChunks ?? DEFAULT_SPARSE_MAX_CHUNKS
   const rowTop = options.rowTop ?? 0
   const quantum = options.tabQuantum ?? DEFAULT_TAB_QUANTUM
   const tabSize = options.columns ? quantum : (options.tabSize ?? 120)
@@ -685,6 +696,8 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
   // the font of the chunks: the font of the visible text, or a monospace font
   const chunkFont = baseFont ? `${fontCss(baseFont)};line-height:${rowHeight}px` : `font:${font}`
   const fonts = baseFont ? createFontMetrics(host, chunkFont, baseFont) : undefined
+  const hasPlacedBaselines = options.columns?.some((column) => column.baseline !== undefined || column.lines?.some((line) => line.baseline !== undefined))
+  const rowTextBaseline = !fonts && hasPlacedBaselines ? measureLineBaseline(host, font, rowHeight) : 0
   // the width of one character: of the monospace font, or of a space in the font of the text (a tab stop closer than half of it is skipped)
   const charWidth = options.columns ? (options.charWidth ?? (baseFont && fonts ? fonts.space(baseFont) : measureCharWidth(host, font))) : 0
 
@@ -701,10 +714,9 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
   // The index of a row: the line of text, and the overlays (the pieces that the index draws away from their place in the flow).
   const layoutOf = (i: number): { text: string; overlays: NativeFindOverlay[] } =>
     options.columns
-      ? layoutCells(options.getRowCells(i), options.columns, charWidth, quantum, fonts)
+      ? layoutCells(options.getRowCells(i), options.columns, charWidth, quantum, fonts, rowTextBaseline)
       : { text: cleanLine(options.getRowText(i)), overlays: [] }
-  const lines: string[] = new Array(rowCount)
-  let lower: string[] | null = null // built on the first query that the browser gives us (Firefox only)
+  let textLength = 0
 
   // The content of a chunk: one line of text per row, a tab between the cells. A piece that the index draws in the font of its
   // cell or away from its place in the flow is wrapped in an inline span with `position: relative`.
@@ -751,7 +763,7 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
     for (let i = first; i < end; i++) {
       if (i > first) buf += '\n'
       const { text: line, overlays } = layoutOf(i)
-      lines[i] = line
+      textLength += line.length + 1
       let p = 0
       for (const o of overlays) {
         buf += line.slice(p, o.at)
@@ -786,13 +798,9 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
   }
   host.append(fragment)
   fonts?.release?.()
-  const textLength = lines.reduce((n, l) => n + l.length + 1, 0)
   const buildMs = win.performance.now() - startedAt
 
-  // "full": every chunk is in the page. "sparse": a browser that gives the typed text through the selection (Firefox)
-  // lets the page drop the chunks that hold no match, when the query touches few chunks. That keeps the document small.
-  let mode: NativeFindMode = 'full'
-  let keep = new Set<number>()
+  // Keep every chunk in the page. A browser can change the query before it exposes a selection to the page.
   let query = ''
   let pinned: HTMLElement | null = null // the chunk of the last find hit: never hidden by scrolling
   let scrollFrame = 0
@@ -816,13 +824,8 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
       const near = k >= a && k <= b
       const protect = d === pinned || d === selChunk
       const attached = d.parentNode === host
-      const wantIn = mode === 'full' || near || protect || keep.has(k)
-      if (!wantIn) {
-        if (attached) d.remove()
-        continue
-      }
       if (!attached) {
-        // keep the chunk order equal to the row order
+        // Keep the chunk order equal to the row order if another system removed one.
         let next: HTMLElement | null = null
         for (let j = k + 1; j < count; j++) {
           if (chunks[j].parentNode === host) {
@@ -838,18 +841,9 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
     }
   }
 
-  function setQuery(q: string) {
-    lower ??= lines.map((l) => l.toLowerCase())
-    const set = chunksOfQuery(lower, q, per, sparseMax)
-    mode = set && set.size ? 'sparse' : 'full'
-    keep = set ?? new Set()
-    reconcile()
-  }
-
   function reset() {
     query = ''
-    mode = 'full'
-    keep = new Set()
+    pinned = null
     reconcile()
   }
 
@@ -878,15 +872,11 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
     const row = rowOfPoint(c, a, s.anchorOffset, Number(c.getAttribute(CHUNK_ATTR)) * per)
     if (row !== null) onActiveRow?.(row)
     if (!doc.hasFocus()) {
-      const q = text.toLowerCase()
-      if (q !== query) {
-        query = q
-        setQuery(q)
-      }
+      query = text.toLowerCase()
     }
   }
   const onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape' && (query || mode !== 'full')) reset()
+    if (e.key === 'Escape' && query) reset()
   }
 
   host.addEventListener('beforematch', onBeforeMatch)
@@ -934,7 +924,7 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
         const ls = (ck.textContent ?? '').toLowerCase().split('\n')
         for (let k = 0; k < ls.length; k++) {
           const row = base + k
-          if (ls[k] !== lines[row]?.toLowerCase() && corrupt.length < 5) corrupt.push(row)
+          if (ls[k] !== layoutOf(row).text.toLowerCase() && corrupt.length < 5) corrupt.push(row)
           for (const cell of ls[k].split('\t')) {
             const c = occurrences(cell)
             if (c) {
@@ -965,7 +955,7 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
 
   return {
     get mode() {
-      return mode
+      return 'full' as const
     },
     get query() {
       return query

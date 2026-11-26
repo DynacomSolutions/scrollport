@@ -201,6 +201,12 @@ describe('layoutCells (multi-line cells)', () => {
     expect(overlays.map((o) => o.dy)).toEqual([-7, 9])
   })
 
+  it('places a supplied baseline relative to the measured row-text baseline', () => {
+    const c: NativeFindColumn[] = [{ start: 8, end: 108, lines: [{ baseline: 12 }] }]
+    const { text, overlays } = layoutCells([['name']], c, 8, 20, undefined, 5)
+    expect(overlays.map((overlay) => [text.slice(overlay.at, overlay.at + overlay.length), overlay.dy])).toEqual([['name', 7]])
+  })
+
   it('moves a line to the exact left edge of its visible text', () => {
     // the first line wants x 150 (column start 120 + dx 30): the flow puts it at a tab stop, the overlay moves it the rest
     const { text, overlays } = layoutCells(['ab', ['@ann', 'Ann Lee'], 'ef'], cols, 8, 20)
@@ -434,17 +440,26 @@ describe('createNativeFind', () => {
     expect(chunk(7)!.getAttribute('hidden')).toBe('until-found')
   })
 
-  describe('sparse mode', () => {
-    it('switches when the browser gives a query that touches few chunks, and reports the row', () => {
+  describe('full index', () => {
+    it('keeps every chunk attached when Firefox gives a query and reports the row', () => {
       const onActiveRow = vi.fn()
       make({ onActiveRow })
       select(4, 'needle')
-      expect(find.mode).toBe('sparse')
+      expect(find.mode).toBe('full')
       expect(find.query).toBe('needle')
       expect(onActiveRow).toHaveBeenCalledWith(450)
-      expect(find.attachedChunks).toBe(2) // the chunk with the match and the chunk in view
-      expect(chunk(1)).toBeNull()
+      expect(find.attachedChunks).toBe(10)
+      expect(chunk(1)).not.toBeNull()
       expect(chunk(4)).not.toBeNull()
+    })
+
+    it('keeps far rows available after repeated near-to-far queries', () => {
+      make()
+      select(0, 'row 3')
+      select(9, 'row 950')
+      expect(find.query).toBe('row 950')
+      expect(find.attachedChunks).toBe(10)
+      expect(find.audit('row 950')).toMatchObject({ expected: 1, findable: 1, missing: [] })
     })
 
     it('does not switch while the page has focus (the user types in the page)', () => {
@@ -504,7 +519,7 @@ describe('createNativeFind', () => {
       expect(a).toMatchObject({ expected: 2, findable: 2, total: 2, missing: [], duplicates: [], extra: [], other: [], corrupt: [] })
     })
 
-    it('counts the rows that native find can reach in sparse mode too', () => {
+    it('counts the rows in the full index after a query', () => {
       make()
       select(4, 'needle')
       expect(find.audit('needle').findable).toBe(2)
@@ -645,7 +660,7 @@ describe('createNativeFind', () => {
       select(4, 'ann')
       // The first "ann" in chunk 4 is on row 402 (400 is bob, 401 is cy). The tabs between the cells do not count as rows.
       expect(onActiveRow).toHaveBeenCalledWith(402)
-      expect(find.mode).toBe('sparse')
+      expect(find.mode).toBe('full')
     })
 
     describe('multi-line cells', () => {
@@ -756,13 +771,14 @@ describe('createNativeFind', () => {
         expect(onActiveRow).toHaveBeenLastCalledWith(130)
       })
 
-      it('switches to sparse mode for a query that only the lines of the cell hold', () => {
+      it('keeps the full index for a query that only the lines of the cell hold', () => {
         make3()
         const node = spans(1)[100].firstChild as Text // the handle line of row 150
         expect(node.data).toBe('@user150')
         document.getSelection()!.setBaseAndExtent(node, 0, node, 8)
         document.dispatchEvent(new Event('selectionchange'))
-        expect(find.mode).toBe('sparse')
+        expect(find.mode).toBe('full')
+        expect(find.attachedChunks).toBe(find.chunkCount)
       })
     })
   })

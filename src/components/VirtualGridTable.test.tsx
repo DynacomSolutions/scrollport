@@ -29,6 +29,16 @@ describe('VirtualGridTable with native find', () => {
 
   beforeAll(() => {
     ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+    const values = new Map<string, string>()
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => values.set(key, value),
+        removeItem: (key: string) => values.delete(key),
+        clear: () => values.clear(),
+      } satisfies Pick<Storage, 'getItem' | 'setItem' | 'removeItem' | 'clear'>,
+    })
     vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} unobserve() {} })
     vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
   })
@@ -120,6 +130,32 @@ describe('VirtualGridTable with native find', () => {
     expect(line.split(/\t+/).map((c) => c.trim()).filter(Boolean)).toEqual(['name1', '7 pts', 'Oslo'])
   })
 
+  it('places a default two-line match on its supplied line geometry', () => {
+    const two: ColumnDef<Person>[] = [
+      {
+        accessorKey: 'name',
+        header: 'Name',
+        size: 200,
+        meta: {
+          fixed: true,
+          findText: (row) => [`@${row.original.name}`, row.original.name],
+          findLines: [{ dx: 30, dy: -7 }, { dx: 30, dy: 9 }],
+        } as ColumnMeta<Person>,
+        cell: ({ row }) => <IndexedText text={row.original.name} />,
+      },
+      columns[2],
+    ]
+    render(table(people(5), { columns: two, findFontMatch: false }))
+    const spans = [...el.querySelectorAll<HTMLElement>('[data-sp-chunk="0"] span')]
+    expect(spans.slice(0, 4).map((span) => [span.textContent, getComputedStyle(span).top])).toEqual([
+      ['@name0', '-7px'],
+      ['name0', '9px'],
+      ['@name1', '-7px'],
+      ['name1', '9px'],
+    ])
+    expect(el.querySelector('[data-sp-chunk="0"]')!.textContent).toContain('@name1\tname1')
+  })
+
   it('places each line on its own baseline when font matching is enabled after mount', () => {
     const two: ColumnDef<Person>[] = [
       {
@@ -140,7 +176,9 @@ describe('VirtualGridTable with native find', () => {
     ]
     const data = people(5)
     render(table(data, { columns: two }))
-    expect(el.querySelector('[data-sp-chunk="0"] span')).toBeNull()
+    const defaultSpans = [...el.querySelectorAll<HTMLElement>('[data-sp-chunk="0"] > span')]
+    expect(defaultSpans.slice(0, 2).map((span) => getComputedStyle(span).top)).toEqual(['-7px', '9px'])
+    expect(el.querySelector<HTMLElement>('[data-sp-chunk="0"]')!.style.font).toContain('monospace')
     act(() => root!.render(table(data, { columns: two, findFontMatch: true })))
     const chunk = el.querySelector('[data-sp-chunk="0"]')!
     const spans = [...chunk.querySelectorAll<HTMLElement>(':scope > span')]
@@ -153,7 +191,7 @@ describe('VirtualGridTable with native find', () => {
     expect(row1.split(/\t+/).filter(Boolean)).toEqual(['@name1', 'Name of 1', 'Oslo'])
   })
 
-  it('puts the lines of a multi-line cell in one string, with no span, when findFontMatch is off (the default)', () => {
+  it('positions multi-line text with the index font when findFontMatch is off', () => {
     const two: ColumnDef<Person>[] = [
       {
         accessorKey: 'name',
@@ -173,9 +211,8 @@ describe('VirtualGridTable with native find', () => {
     ]
     render(<VirtualGridTable<Person> tableId="t3" data={people(5)} columns={two} displayMode="table" nativeFind />)
     const chunk = el.querySelector('[data-sp-chunk="0"]')!
-    expect(chunk.querySelectorAll('span')).toHaveLength(0)
-    expect(chunk.children).toHaveLength(0) // one text node for the chunk
+    expect(chunk.querySelectorAll('span')).toHaveLength(10)
     const row1 = chunk.textContent!.split('\n')[1]
-    expect(row1.split(/\t+/).filter(Boolean)).toEqual(['@name1 Name of 1', 'Oslo'])
+    expect(row1.split(/\t+/).filter(Boolean)).toEqual(['@name1', 'Name of 1', 'Oslo'])
   })
 })

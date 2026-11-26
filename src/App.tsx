@@ -717,7 +717,7 @@ function App() {
         size: 260,
         minSize: 220,
         // Two lines: the handle above the name. The index puts each line on the visible line (see USER_CELL).
-        meta: { fixed: true, minPx: 220, sticky: true, findLines: DEMO_FIND_FONT ? userCellFindLines() : undefined },
+        meta: { fixed: true, minPx: 220, sticky: true, findLines: userCellFindLines() },
         text: (row) => (row.rowType === 'department' ? 'Department Summary' : `@${row.username} ${row.fullName}`),
         lines: (row) => (row.rowType === 'department' ? [{ text: 'Department Summary', ...cellText.summary() }] : [`@${row.username}`, row.fullName]),
         cell: (row) =>
@@ -851,7 +851,11 @@ function App() {
       header: spec.header,
       minSize: spec.minSize,
       size: spec.size,
-      meta: { ...spec.meta, findText: (row: Row<TableRow>) => (DEMO_FIND_FONT && spec.lines ? spec.lines(row.original) : spec.text(row.original)) } satisfies ColumnMeta<TableRow>,
+      meta: {
+        ...spec.meta,
+        findText: (row: Row<TableRow>) =>
+          (spec.key === 'username' || DEMO_FIND_FONT) && spec.lines ? spec.lines(row.original) : spec.text(row.original),
+      } satisfies ColumnMeta<TableRow>,
       cell: ({ row }) => (spec.cell ? spec.cell(row, spec.text(row.original)) : highlightText(spec.text(row.original), rawQuery)),
     }))
   }, [currencyFormatters, numberFormatters, rawQuery])
