@@ -398,6 +398,7 @@ body {
 .grid-row {
   display: grid;
   align-items: stretch;
+  width: max-content;
   min-width: 100%;
   height: 46px;
 }
