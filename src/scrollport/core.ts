@@ -696,8 +696,8 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
   // the font of the chunks: the font of the visible text, or a monospace font
   const chunkFont = baseFont ? `${fontCss(baseFont)};line-height:${rowHeight}px` : `font:${font}`
   const fonts = baseFont ? createFontMetrics(host, chunkFont, baseFont) : undefined
-  const hasPlacedBaselines = options.columns?.some((column) => column.baseline !== undefined || column.lines?.some((line) => line.baseline !== undefined))
-  const rowTextBaseline = !fonts && hasPlacedBaselines ? measureLineBaseline(host, font, rowHeight) : 0
+  // A row may supply its own baseline, so measure the index baseline once for every monospace column index.
+  const rowTextBaseline = !fonts && options.columns ? measureLineBaseline(host, font, rowHeight) : 0
   // the width of one character: of the monospace font, or of a space in the font of the text (a tab stop closer than half of it is skipped)
   const charWidth = options.columns ? (options.charWidth ?? (baseFont && fonts ? fonts.space(baseFont) : measureCharWidth(host, font))) : 0
 

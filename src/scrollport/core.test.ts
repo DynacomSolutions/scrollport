@@ -462,6 +462,28 @@ describe('createNativeFind', () => {
       expect(find.audit('row 950')).toMatchObject({ expected: 1, findable: 1, missing: [] })
     })
 
+    it('measures the row baseline for a row-local zero baseline without column geometry', () => {
+      const rect = (top: number, width: number, height: number): DOMRect =>
+        ({ x: 0, y: top, width, height, top, right: width, bottom: top + height, left: 0, toJSON: () => ({}) }) as DOMRect
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+        if (this.style.width === '1px' && this.style.height === `${RH}px`) return rect(100, 1, RH)
+        if (this.style.display === 'inline-block' && this.style.width === '0px') return rect(116, 0, 0)
+        return rect(0, 0, 0)
+      })
+      find = createNativeFind({
+        scroller,
+        host,
+        rowCount: 1,
+        rowHeight: RH,
+        rowsPerChunk: PER,
+        getRowCells: () => [[{ text: 'needle', baseline: 0 }]],
+        columns: [{ start: 0, end: 100 }],
+      })
+      const span = chunk(0)!.querySelector('span')
+      expect(span).not.toBeNull()
+      expect(getComputedStyle(span!).top).toBe('-6px')
+    })
+
     it('does not switch while the page has focus (the user types in the page)', () => {
       vi.spyOn(document, 'hasFocus').mockReturnValue(true)
       make()
