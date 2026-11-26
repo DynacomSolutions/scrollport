@@ -666,6 +666,8 @@ function createFontMetrics(host: HTMLElement, indexFont: string, base: NativeFin
   return metrics
 }
 
+let nextIndexId = 0
+
 export function createNativeFind(options: NativeFindOptions): NativeFind {
   const { scroller, host, rowCount, rowHeight, onActiveRow } = options
   const per = options.rowsPerChunk ?? DEFAULT_ROWS_PER_CHUNK
@@ -709,6 +711,7 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
   // The style of the spans that hold a moved piece. Many spans share one class (the offsets are rounded to 0.1 px): an inline style on
   // each span costs a style declaration for each, which made Firefox slow and large with 600000 spans.
   const spanClasses = new Map<string, string>()
+  const spanPrefix = `sp-s${nextIndexId++}-`
   let spanSheet: CSSStyleSheet | null = null
   let spanStyle: HTMLStyleElement | null = null
   const round1 = (n: number) => Math.round(n * 10) / 10
@@ -727,7 +730,7 @@ export function createNativeFind(options: NativeFindOptions): NativeFind {
         spanStyle = style
         spanSheet = style.sheet
       }
-      name = `sp-s${spanClasses.size}`
+      name = `${spanPrefix}${spanClasses.size}`
       spanClasses.set(key, name)
       const rule = `.${name}{position:relative;line-height:0;left:${dx}px;top:${dy}px${margin ? `;margin-right:${margin}px` : ''}${font ? ';' + font : ''}}`
       try {

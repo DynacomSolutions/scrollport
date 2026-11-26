@@ -72,9 +72,9 @@ type VirtualGridTableProps<TData extends object> = {
   /**
    * Draw the native find index in the font of the visible text and put each line of a multi-line cell on its visible line (see
    * `ColumnMeta.findText`), so the find highlight covers the real glyphs. Default false: the index is then a monospace line of
-   * text for each row with one line for each cell, which is smaller and quicker to build (about 2.5 times) and has no inline spans, but the highlight
-   * lies only near the visible text. The font based index puts some of its text in inline spans. Chromium 157 can lose the active
-   * match or show a wrong count in its find bar on a query with two matches in one row when one of them lies in such a span (see the README).
+   * text for each row with one line for each cell. It is smaller and quicker to build, but the highlight lies only near the
+   * visible text. With font matching on, Chromium 157 lost the active match or showed a wrong count in some two-match runs.
+   * The cause is not confirmed (see the README).
    */
   findFontMatch?: boolean
   /**
@@ -328,7 +328,7 @@ export function VirtualGridTable<TData extends object>({
     })
     // `columnSizing` is the state behind `column.getSize()`
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleColumns, columnSizing, edgeGutter])
+  }, [visibleColumns, columnSizing, edgeGutter, findFontMatch])
   // The cell texts of a row do not change when the rows move, so they are kept per row (a sort or a filter reuses them).
   // They do change when a column definition or the visible columns change.
   const findCellCache = useMemo(() => new WeakMap<object, readonly NativeFindCell[]>(), [columns, visibleColumns, findFontMatch])

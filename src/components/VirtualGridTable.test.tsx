@@ -120,7 +120,7 @@ describe('VirtualGridTable with native find', () => {
     expect(line.split(/\t+/).map((c) => c.trim()).filter(Boolean)).toEqual(['name1', '7 pts', 'Oslo'])
   })
 
-  it('indexes a cell with several lines as placed spans and moves no other cell', () => {
+  it('places each line on its own baseline when font matching is enabled after mount', () => {
     const two: ColumnDef<Person>[] = [
       {
         accessorKey: 'name',
@@ -138,7 +138,10 @@ describe('VirtualGridTable with native find', () => {
       },
       columns[2],
     ]
-    render(<VirtualGridTable<Person> tableId="t2" data={people(5)} columns={two} displayMode="table" nativeFind findFontMatch />)
+    const data = people(5)
+    render(table(data, { columns: two }))
+    expect(el.querySelector('[data-sp-chunk="0"] span')).toBeNull()
+    act(() => root!.render(table(data, { columns: two, findFontMatch: true })))
     const chunk = el.querySelector('[data-sp-chunk="0"]')!
     const spans = [...chunk.querySelectorAll<HTMLElement>(':scope > span')]
     expect(spans.map((sp) => sp.textContent).filter((t) => t !== 'Oslo' && t !== 'Rome' && t !== 'Paris').slice(0, 4)).toEqual(['@name0', 'Name of 0', '@name1', 'Name of 1'])

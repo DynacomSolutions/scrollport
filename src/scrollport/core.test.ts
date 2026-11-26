@@ -660,6 +660,23 @@ describe('createNativeFind', () => {
         (find = createNativeFind({ scroller, host, rowCount: 250, rowHeight: RH, rowTop: 50, charWidth: 8, rowsPerChunk: PER, getRowCells: mcells, columns: MCOLS, ...extra }))
       const spans = (k: number) => [...chunk(k)!.querySelectorAll<HTMLElement>(':scope > span')]
 
+      it('keeps span offsets separate when two indexes share a document', () => {
+        make3()
+        const secondHost = document.createElement('div')
+        scroller.append(secondHost)
+        const second = createNativeFind({
+          host: secondHost, scroller, rowCount: 1, rowHeight: RH, charWidth: 8,
+          getRowCells: () => [['Other']], columns: [{ start: 8, end: 108, lines: [{ dy: 12 }] }],
+        })
+        try {
+          expect(getComputedStyle(secondHost.querySelector('span')!).top).toBe('12px')
+          expect(getComputedStyle(spans(0)[0]).top).toBe('-7px')
+        } finally {
+          second.destroy()
+        }
+        expect(getComputedStyle(spans(0)[0]).top).toBe('-7px')
+      })
+
       it('wraps each moved line in an inline span with position relative, and keeps it in the row text', () => {
         make3()
         const s = spans(1) // rows 100 to 199
