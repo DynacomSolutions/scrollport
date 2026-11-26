@@ -240,11 +240,13 @@ export const cleanLine = (text: string): string => text.replace(/[\r\n]+/g, ' ')
 export const cleanCell = (text: string): string => text.replace(/[\t\r\n]+/g, ' ')
 
 const EPS = 1e-6
-type FlowPlan = { tabs: number; spaces: number; kern: number }
+type FlowPlan = { tabs: number; spaces: number; kern: number; trail: number }
 /** Most error in px of the left edge of a piece in the font of the row text (see `layoutCells`). */
 const FLOW_ERROR = 1.0
 /** Most spaces after the tabs of a piece in the font of the row text. */
 const MAX_FINE_SPACES = 14
+/** Most spaces after the text of a piece in the font of the row text: they move its end away from the edge of the skip rule, so the piece needs no span. */
+const MAX_TRAIL_SPACES = 2
 /** Distance in px between the end of a piece and a change of its next tab stop that is safe for a small error of the measured width. */
 const SAFE_SLACK = 0.6
 
@@ -299,7 +301,7 @@ export function layoutCells(
   }
   // The tabs and spaces that bring a piece in the font of the row text to within `FLOW_ERROR` of `want`, with room for a small error of
   // the measured width at its end. Null when no count of spaces does it: the piece then gets a span (an overlay).
-  const planFlow = (text: string, width: number, want: number, hadTab: boolean): FlowPlan | null => {
+  const planFlow = (text: string, width: number, want: number, hadTab: boolean, maxTrail: number): FlowPlan | null => {
     const from = hadTab ? stopAfter(pos) : pos
     // a space and the first character of the text can kern: the text then starts a little before the end of the spaces
     const kern = base && fonts && text ? fonts.kernAfterSpace(base, text[0]) : 0
@@ -309,12 +311,22 @@ export function layoutCells(
       const tabs = Math.max(0, Math.round((want - b * spaceWidth - (b ? kern : 0) - from) / quantum))
       const start = from + tabs * quantum + b * spaceWidth + (b ? kern : 0)
       const err = Math.abs(start - want)
-      if (err > FLOW_ERROR || slack(start + width) < SAFE_SLACK) continue
-      if (err < bestErr - 0.05 || (Math.abs(err - bestErr) <= 0.05 && best && tabs + b < best.tabs + best.spaces)) {
-        best = { tabs, spaces: b, kern }
+      if (err > FLOW_ERROR) continue
+      // spaces after the text move its end away from the edge of the skip rule (the fewest that do it)
+      let trail = -1
+      for (let t = 0; t <= maxTrail; t++) {
+        if (slack(start + width + t * spaceWidth) >= SAFE_SLACK) {
+          trail = t
+          break
+        }
+      }
+      if (trail < 0) continue
+      const cost = tabs + b + trail
+      if (err < bestErr - 0.05 || (Math.abs(err - bestErr) <= 0.05 && best && cost < best.tabs + best.spaces + best.trail)) {
+        best = { tabs, spaces: b, kern, trail }
         bestErr = err
       }
-      if (err < 0.3) break // good enough: no need to try more
+      if (err < 0.3 && trail === 0) break // good enough: no need to try more
     }
     return best
   }
@@ -338,6 +350,10 @@ export function layoutCells(
     const start = pos
     out += text
     pos += width
+    if (how === 'flow' && plan && plan.trail) {
+      out += ' '.repeat(plan.trail)
+      pos += plan.trail * spaceWidth
+    }
     return start
   }
   // The tab after a piece goes to the stop above its end. When the measured end lies near the edge of that choice, a small error
@@ -380,7 +396,7 @@ export function layoutCells(
       let how: 'join' | 'flow' | 'near' = join ? 'join' : 'near'
       let plan: FlowPlan | null = null
       if (!join && font !== undefined && !other && Math.abs(top) < 0.25) {
-        plan = planFlow(text, width, want, !first)
+        plan = planFlow(text, width, want, !first, joinNext ? 0 : MAX_TRAIL_SPACES)
         if (plan) how = 'flow'
       }
       const start = write(text, width, want, how, plan)

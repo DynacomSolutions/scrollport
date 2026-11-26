@@ -312,6 +312,16 @@ describe('layoutCells (multi-line cells)', () => {
     expect(laid.text).toMatch(/^\t+ *hello$/)
   })
 
+  it('keeps a piece in the row text, with spaces after it, when its end lies near the edge of the skip rule', () => {
+    const c: NativeFindColumn[] = [{ start: 103, end: 300, font: f12 }, { start: 320, end: 400, font: f12 }]
+    for (let n = 1; n <= 24; n++) {
+      const word = 'x'.repeat(n)
+      const laid = layoutCells([word, 'z'], c, 6, 10, metrics)
+      expect(laid.overlays).toEqual([]) // no span for any width
+      expect(laid.text).toMatch(/^\t+ *x+ {0,2}\t+ *z {0,2}$/)
+    }
+  })
+
   it('writes a plain string in a multi-line column as a normal cell', () => {
     const { text, overlays } = layoutCells(['ab', 'Department Summary', 'ef'], cols, 8, 20)
     expect(overlays).toEqual([])
