@@ -55,6 +55,16 @@ In the grouped desktop grid, replacing a near-row query in Chromium reached and 
 
 On Android 15 with Chrome 124, a standalone 1,000-row fixture with 25 columns scrolled to and highlighted real cells. In the standalone 100,000-row fixture, Find stalled and Android killed the renderer under memory pressure. In the grouped product table at 1,000 rows, Chrome reported `1/1` for an email, but the target text was still outside the visible area in the capture. The standalone fixture results do not establish product support.
 
+## Compatibility migration
+
+The `core` helpers remain available for pure text and layout calculations. The `NativeFind` object now audits displayed DOM text. It does not expose browser Find query state, reset controls, sparse index state, or highlight geometry.
+
+`useNativeFind`, `useFindIndex`, `IndexedText`, `NativeFindGrid.onFind`, and `VirtualGridTable.onFind` remain available. Their callbacks observe real text. `IndexedText` renders ordinary selectable text. An observer does not add a second copy of text.
+
+`createNativeFind` audits text that the caller already renders. The caller must render its own links, controls, formatting, and cells inside the observed host. Empty hosts stay empty, even when the audit source describes expected text.
+
+The pure layout helpers still return calculated text and positions. Scrollport does not apply their outputs to browser Find. The browser owns query state, match counts, highlighting, and navigation.
+
 ## Development
 
 ```sh

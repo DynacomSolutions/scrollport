@@ -2,7 +2,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { ColumnDef } from '@tanstack/react-table'
-import { VirtualGridTable } from './VirtualGridTable'
+import { VirtualGridTable, type VirtualGridColumn } from './VirtualGridTable'
 
 type Person = { id: number; name: string; city: string; score: number }
 
@@ -130,6 +130,37 @@ describe('VirtualGridTable native Find DOM', () => {
     expect(row.querySelector('a[href="/person/1"]')?.textContent).toBe('First lineSecond line')
     expect(row.querySelector('button')?.textContent).toBe('Open')
     expect(row.querySelector('[inert]')).toBeNull()
+  })
+
+  it('uses the pure renderer for native body cells and retains normal cell rendering in card mode', () => {
+    const onOpen = vi.fn()
+    const richColumns: VirtualGridColumn<Person>[] = [
+      {
+        accessorKey: 'name',
+        header: 'Name',
+        renderNativeCell: (row) => <button type="button" onClick={onOpen}>{row.original.name}</button>,
+        cell: ({ getValue }) => <a href="/person">{String(getValue())}</a>,
+      },
+      { accessorKey: 'city', header: 'City', cell: ({ getValue }) => String(getValue()) },
+    ]
+    const people = data(2)
+    const sorted = table(people, true, { columns: richColumns, sorting: [{ id: 'name', desc: true }] })
+    render(sorted)
+    expect([...el.querySelectorAll('.body-row button')].map((button) => button.textContent)).toEqual(['name1', 'name0'])
+    expect([...el.querySelectorAll('.body-row')].map((row) => row.querySelectorAll('.td')[1]?.textContent)).toEqual(['Oslo', 'Riga'])
+    act(() => el.querySelector<HTMLButtonElement>('.body-row button')!.click())
+    expect(onOpen).toHaveBeenCalledTimes(1)
+
+    const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(900)
+    const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(500)
+    try {
+      act(() => root!.render(table(people, true, { columns: richColumns, displayMode: 'card' })))
+      expect(el.querySelector('.card-field-value a')?.textContent).toBe('name0')
+      expect(el.querySelector('.card-field-value button')).toBeNull()
+    } finally {
+      width.mockRestore()
+      height.mockRestore()
+    }
   })
 
   it('keeps native cell text in sorted order and updates it when data is filtered', () => {

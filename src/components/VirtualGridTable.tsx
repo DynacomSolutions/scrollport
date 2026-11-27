@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   flexRender,
   getCoreRowModel,
   getExpandedRowModel,
   getSortedRowModel,
   useReactTable,
+  type Cell,
   type ColumnDef,
   type ColumnSizingState,
   type ExpandedState,
@@ -13,12 +14,17 @@ import {
   type SortingState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { createNativeFind, type NativeFind, type NativeFindCell } from '../scrollport/core'
 
-export type ColumnMeta = {
+export type ColumnMeta<TData extends object = object> = {
   fixed?: boolean
   minPx?: number
   numeric?: boolean
   sticky?: boolean
+  /** Data description for audits. Browser Find still searches the rendered cell text. */
+  findText?: (row: Row<TData>) => string
+  /** Rich searchable text with explicit lines. */
+  findCellText?: (row: Row<TData>) => NativeFindCell
 
 }
 
@@ -27,10 +33,15 @@ export const DEFAULT_ROW_HEIGHT = 46
 
 export type TableDisplayMode = 'table' | 'card' | 'auto'
 
+export type VirtualGridColumn<TData extends object> = ColumnDef<TData> & {
+  /** A pure function that returns the displayed cell content for native Find. */
+  renderNativeCell?: (row: Row<TData>) => ReactNode
+}
+
 type VirtualGridTableProps<TData extends object> = {
   tableId: string
   data: TData[]
-  columns: ColumnDef<TData>[]
+  columns: VirtualGridColumn<TData>[]
   getRowId?: (originalRow: TData, index: number, parent?: Row<TData>) => string
   getSubRows?: (row: TData) => TData[] | undefined
   storageKey?: string
@@ -48,6 +59,8 @@ type VirtualGridTableProps<TData extends object> = {
    * Native find renders the real table rows in the DOM. Browser Find searches and paints their displayed text.
    */
   nativeFind?: boolean
+  /** Reports a passive observer for real table cells. */
+  onFind?: (find: NativeFind | null) => void
   /** Start with every group row expanded when the user has no saved state. */
   defaultExpanded?: boolean
 }
@@ -70,6 +83,7 @@ export function VirtualGridTable<TData extends object>({
   onSortingChange,
   autoScrollX = 'off',
   nativeFind = false,
+  onFind,
   defaultExpanded = false,
 }: VirtualGridTableProps<TData>) {
   const effectiveStorageKey = storageKey ?? `table.${tableId}.column-sizing`
@@ -221,6 +235,25 @@ export function VirtualGridTable<TData extends object>({
   const rows = table.getRowModel().rows
   const sortedGroupRows = table.getSortedRowModel().rows
   const visibleColumns = table.getVisibleLeafColumns()
+  const getFindRowCells = useCallback((rowIndex: number): readonly NativeFindCell[] => {
+    const row = rows[rowIndex]
+    if (!row) return []
+    return row.getVisibleCells().map((cell) => {
+      const meta = (cell.column.columnDef.meta ?? {}) as ColumnMeta<TData>
+      return meta.findCellText ? meta.findCellText(row) : meta.findText ? meta.findText(row) : String(cell.getValue() ?? '')
+    })
+  }, [rows, visibleColumns, columns])
+  useEffect(() => {
+    const scroller = tableContainerRef.current
+    const host = tableInnerRef.current
+    if (!nativeFind || !isNativeFindTable || !onFind || !scroller || !host) return
+    const find = createNativeFind({ scroller, host, rowCount: rows.length, rowHeight, getRichRowCells: getFindRowCells })
+    onFind(find)
+    return () => {
+      find.destroy()
+      onFind(null)
+    }
+  }, [nativeFind, isNativeFindTable, onFind, rows.length, rowHeight, getFindRowCells, columns, visibleColumns])
   const resizingColumnId = visibleColumns.find((column) => column.getIsResizing())?.id ?? null
   const highlightedResizeColumnId = resizingColumnId ?? hoveredResizeColumnId
 
@@ -277,6 +310,9 @@ export function VirtualGridTable<TData extends object>({
 
   const allColumnItems = useMemo(() => visibleColumns.map((_, index) => ({ index })), [visibleColumns])
   const virtualColumns = findEnabled ? allColumnItems : columnVirtualizer.getVirtualItems()
+  const nativeCellRenderers = findEnabled
+    ? visibleColumns.map((column) => (column.columnDef as VirtualGridColumn<TData>).renderNativeCell)
+    : []
   const virtualRows = rowVirtualizer.getVirtualItems()
   const rowIndices = findEnabled ? rows.map((_, index) => index) : virtualRows.map((item) => item.index)
 
@@ -596,8 +632,7 @@ export function VirtualGridTable<TData extends object>({
 
         {rowIndices.map((rowIndex) => {
           const row = rows[rowIndex]
-          const cells = row.getVisibleCells()
-          const cellsByColumnId = new Map(cells.map((cell) => [cell.column.id, cell]))
+          let cellsByColumnId: Map<string, Cell<TData, unknown>> | undefined
 
           const rowIsSubheader = isSubheaderRow ? isSubheaderRow(row) : false
           const isNativeFindStickySubheader = rowIsSubheader && nativeStickySubheaderIds.has(row.id)
@@ -622,7 +657,11 @@ export function VirtualGridTable<TData extends object>({
 
               {renderCells((index) => {
                 const column = visibleColumns[index]
-                const cell = cellsByColumnId.get(column.id)
+                const renderNativeCell = nativeCellRenderers[index]
+                if (!renderNativeCell) {
+                  cellsByColumnId ??= new Map(row.getVisibleCells().map((cell) => [cell.column.id, cell]))
+                }
+                const cell = renderNativeCell ? undefined : cellsByColumnId?.get(column.id)
                 const meta = (column.columnDef.meta ?? {}) as ColumnMeta
                 const numericClass = meta.numeric ? ' cell-numeric' : ''
                 const stickyClass = meta.sticky ? ' sticky-col' : ''
@@ -630,7 +669,7 @@ export function VirtualGridTable<TData extends object>({
                 const resizeHighlightClass = column.id === highlightedResizeColumnId ? ' col-resize-highlight' : ''
                 const stickyLeft = stickyLeftById.get(column.id) ?? 0
 
-                if (!cell) {
+                if (!cell && !renderNativeCell) {
                   return (
                     <div
                       key={`missing-${row.id}-${column.id}`}
@@ -643,11 +682,13 @@ export function VirtualGridTable<TData extends object>({
 
                 return (
                   <div
-                    key={cell.id}
+                    key={cell?.id ?? `${row.id}_${column.id}`}
                     className={`td${numericClass}${stickyClass}${leftShadowClass}${resizeHighlightClass}`}
                     style={stickyStyle(stickyLeft)}
                   >
-                    <span className="sticky-surface">{flexRender(cell.column.columnDef.cell, cell.getContext())}</span>
+                    <span className="sticky-surface">
+                      {renderNativeCell ? renderNativeCell(row) : cell && flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </span>
                   </div>
                 )
               })}

@@ -1,6 +1,6 @@
 import './styles.css'
 import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
-import type { ColumnDef, Row, SortingState } from '@tanstack/react-table'
+import type { Row, SortingState } from '@tanstack/react-table'
 import { generateData, type UserRecord } from './data'
 import {
   OmniSearchBar,
@@ -9,8 +9,9 @@ import {
   type OmniSearchPill,
   type OmniSearchState,
 } from './components/OmniSearchBar'
-import { VirtualGridTable, type ColumnMeta, type TableDisplayMode } from './components/VirtualGridTable'
+import { VirtualGridTable, type ColumnMeta, type TableDisplayMode, type VirtualGridColumn } from './components/VirtualGridTable'
 import { CellText } from './scrollport/react'
+import type { NativeFind, NativeFindCell } from './scrollport/core'
 
 type TableRow = Omit<UserRecord, 'id'> & {
   id: number | string
@@ -413,9 +414,9 @@ export function recordIdValue(row: Pick<TableRow, 'id' | 'rowType'>): number | u
   return row.rowType === 'department' || typeof row.id !== 'number' ? undefined : row.id
 }
 
-export type NativeFindTableDemoProps = { rowCount?: number; nativeFind?: boolean; tableDisplayMode?: TableDisplayMode }
+export type NativeFindTableDemoProps = { rowCount?: number; nativeFind?: boolean; tableDisplayMode?: TableDisplayMode; onFind?: (find: NativeFind | null) => void }
 
-export function NativeFindTableDemo({ rowCount = DEMO_ROWS, nativeFind = true, tableDisplayMode }: NativeFindTableDemoProps = {}) {
+export function NativeFindTableDemo({ rowCount = DEMO_ROWS, nativeFind = true, tableDisplayMode, onFind }: NativeFindTableDemoProps = {}) {
   const initialSearchState = useMemo(() => parseSearchStateFromUrl(TABLE_ID), [])
   const initialSortingState = useMemo(() => parseSortingStateFromUrl(TABLE_ID), [])
   const initialAutoScrollX = useMemo(() => {
@@ -576,16 +577,18 @@ export function NativeFindTableDemo({ rowCount = DEMO_ROWS, nativeFind = true, t
   }, [numericPrecision])
 
   // One entry per column. The cell renderer controls its real searchable text and formatting.
-  const columns = useMemo<ColumnDef<TableRow>[]>(() => {
+  const columns = useMemo<VirtualGridColumn<TableRow>[]>(() => {
     type Spec = {
       key: keyof TableRow & string
       header: string
       size: number
       minSize: number
-      meta?: Partial<ColumnMeta>
+      meta?: Partial<ColumnMeta<TableRow>>
       accessorFn?: (row: TableRow) => unknown
       text: (row: TableRow) => string
       cell?: (row: Row<TableRow>, text: string) => ReactNode
+      findText?: (row: TableRow) => string
+      findCellText?: (row: TableRow) => NativeFindCell
     }
     const summary = (label: string) => <CellText className="summary-label" text={label} />
     const num = (key: NumericColumnKey) => (row: TableRow) => numberFormatters[key].format(Number(row[key]))
@@ -599,6 +602,7 @@ export function NativeFindTableDemo({ rowCount = DEMO_ROWS, nativeFind = true, t
         minSize: 220,
         meta: { fixed: true, minPx: 220, sticky: true },
         text: (row) => (row.rowType === 'department' ? `${row.department} ${row.userCount} users` : row.department),
+        findText: (row) => row.rowType === 'department' ? `▸${row.department}${row.userCount} users` : row.department,
         // the text of a sub row starts after an indent, the text of a group row after the chevron
         cell: (row) =>
           isGroup(row) ? (
@@ -628,6 +632,7 @@ export function NativeFindTableDemo({ rowCount = DEMO_ROWS, nativeFind = true, t
         minSize: 220,
         meta: { fixed: true, minPx: 220, sticky: true },
         text: (row) => (row.rowType === 'department' ? 'Department Summary' : `@${row.username} ${row.fullName}`),
+        findCellText: (row) => row.rowType === 'department' ? 'Department Summary' : [`@${row.username}`, row.fullName],
         cell: (row) =>
           isGroup(row) ? (
             summary('Department Summary')
@@ -645,7 +650,7 @@ export function NativeFindTableDemo({ rowCount = DEMO_ROWS, nativeFind = true, t
             </div>
           ),
       },
-      { key: 'email', header: 'Email', size: 240, minSize: 220, meta: { minPx: 220 }, text: (row) => row.email },
+      { key: 'email', header: 'Email', size: 300, minSize: 220, meta: { minPx: 220 }, text: (row) => row.email },
       { key: 'role', header: 'Role', size: 190, minSize: 180, meta: { minPx: 180 }, text: (row) => row.role },
       { key: 'country', header: 'Country', size: 170, minSize: 160, meta: { minPx: 160 }, text: (row) => row.country },
       { key: 'city', header: 'City', size: 140, minSize: 130, meta: { minPx: 130 }, text: (row) => row.city },
@@ -748,15 +753,24 @@ export function NativeFindTableDemo({ rowCount = DEMO_ROWS, nativeFind = true, t
         text: (row) => formatDate(row.renewalDate),
       },
     ]
-    return specs.map<ColumnDef<TableRow>>((spec) => {
+    return specs.map<VirtualGridColumn<TableRow>>((spec) => {
       const { accessorFn, ...column } = spec
+      const renderNativeCell = (row: Row<TableRow>) => {
+        const text = column.text(row.original)
+        return column.cell ? column.cell(row, text) : highlightText(text, rawQuery)
+      }
       return {
         ...(accessorFn ? { accessorFn, id: spec.key } : { accessorKey: spec.key }),
         header: column.header,
         minSize: column.minSize,
         size: column.size,
-        meta: { ...column.meta } satisfies ColumnMeta,
-        cell: ({ row }) => (column.cell ? column.cell(row, column.text(row.original)) : highlightText(column.text(row.original), rawQuery)),
+        meta: {
+          ...column.meta,
+          findText: (row: Row<TableRow>) => column.findText?.(row.original) ?? column.text(row.original),
+          findCellText: (row: Row<TableRow>) => column.findCellText?.(row.original) ?? column.findText?.(row.original) ?? column.text(row.original),
+        } satisfies ColumnMeta<TableRow>,
+        cell: ({ row }) => renderNativeCell(row),
+        renderNativeCell,
       }
     })
   }, [currencyFormatters, numberFormatters, rawQuery])
@@ -843,6 +857,7 @@ export function NativeFindTableDemo({ rowCount = DEMO_ROWS, nativeFind = true, t
             canSubheaderStick={(row) => row.original.rowType === 'department' && row.getIsExpanded()}
             autoExpandedRowIds={autoExpandedRowIds}
             nativeFind={nativeFind}
+            onFind={onFind}
             defaultExpanded
           />
         </div>

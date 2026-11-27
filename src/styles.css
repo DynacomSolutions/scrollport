@@ -257,7 +257,8 @@ body {
   border-radius: 0;
   background: #fff;
   box-shadow: none;
-  container-type: scroll-state;
+  container: table-viewport / inline-size;
+  container-type: inline-size scroll-state;
 }
 
 .table-inner {
@@ -593,6 +594,14 @@ body {
   background: var(--row-bg, #fff);
   container-type: scroll-state;
   overflow: visible;
+}
+
+/* Leave room to reveal text when the pinned columns would cover a narrow table. */
+@container table-viewport (width <= 800px) {
+  .table-inner.native-find .sticky-col {
+    position: relative;
+    left: auto;
+  }
 }
 
 .sticky-col::after {
