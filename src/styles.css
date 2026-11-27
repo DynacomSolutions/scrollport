@@ -442,6 +442,19 @@ body {
   background: var(--row-bg);
 }
 
+/* Native Find sticks the real department row instead of adding a second copy. */
+.table-inner.native-find .row-department {
+  position: sticky;
+  top: 46px;
+  z-index: 20;
+}
+
+@container scroll-state(stuck: top) {
+  .native-find .header-row::after {
+    opacity: 1;
+  }
+}
+
 .row-department::after {
   content: '';
   position: absolute;

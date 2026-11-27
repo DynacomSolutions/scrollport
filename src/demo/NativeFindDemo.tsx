@@ -1,8 +1,6 @@
 import { useCallback, useRef } from 'react'
 import { NativeFindGrid } from '../scrollport/react'
-import type { NativeFind } from '../scrollport/core'
 import { COLUMNS, ROW_COUNT, demoRow } from './rows'
-import { publishFindTest } from './findTest'
 import './demo.css'
 
 /** Ids and words that exist in the data. They are not written on the page, so the page adds no match to a query. */
@@ -15,14 +13,12 @@ export default function NativeFindDemo() {
     void navigator.clipboard?.writeText(text)
   }
   const getRow = useCallback((i: number) => demoRow(i), [])
-  const publish = useCallback((find: NativeFind | null) => publishFindTest(find, ROW_COUNT), [])
   return (
     <main className="demo">
       <h1>Scrollport demo</h1>
       <section className="demo-box">
         <p>
-          This grid has 100000 rows, but the page draws only the rows in view. The text of every row sits in a hidden index, so the browser find bar
-          reaches all rows.
+          This grid keeps the actual text of all 100000 rows in the page. The browser defers rendering outside the viewport, so Find can reach every row.
         </p>
         <ol>
           <li>Press Ctrl+F (Cmd+F on macOS).</li>
@@ -36,7 +32,7 @@ export default function NativeFindDemo() {
           Then press Ctrl+F and Ctrl+V.
         </p>
       </section>
-      <NativeFindGrid id="grid" rowCount={ROW_COUNT} columns={COLUMNS} getRow={getRow} onFind={publish} />
+      <NativeFindGrid id="grid" rowCount={ROW_COUNT} columns={COLUMNS} getRow={getRow} />
       <ZebraControl />
     </main>
   )

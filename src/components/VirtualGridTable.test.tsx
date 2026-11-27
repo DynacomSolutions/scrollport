@@ -1,29 +1,19 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import type { ColumnDef, SortingState } from '@tanstack/react-table'
-import { IndexedText } from '../scrollport/react'
-import type { NativeFind } from '../scrollport/core'
-import { VirtualGridTable, type ColumnMeta } from './VirtualGridTable'
+import type { ColumnDef } from '@tanstack/react-table'
+import { VirtualGridTable } from './VirtualGridTable'
 
-type Person = { id: number; name: string; city: string; score: number; sub?: Person[] }
+type Person = { id: number; name: string; city: string; score: number }
 
-const people = (n: number, from = 0): Person[] =>
-  Array.from({ length: n }, (_, i) => ({ id: from + i, name: `name${from + i}`, city: i % 2 ? 'Oslo' : 'Riga', score: (i * 7) % 50 }))
-
+const data = (n: number): Person[] => Array.from({ length: n }, (_, i) => ({ id: i, name: `name${i}`, city: i % 2 ? 'Oslo' : 'Riga', score: i * 7 }))
 const columns: ColumnDef<Person>[] = [
-  { accessorKey: 'name', header: 'Name', size: 200, meta: { fixed: true } as ColumnMeta<Person>, cell: ({ row }) => <IndexedText text={row.original.name} /> },
-  {
-    accessorKey: 'score',
-    header: 'Score',
-    size: 100,
-    meta: { numeric: true, findText: (row) => `${row.original.score} pts` } as ColumnMeta<Person>,
-    cell: ({ row }) => <IndexedText text={`${row.original.score} pts`} />,
-  },
-  { accessorKey: 'city', header: 'City', size: 140 }, // no findText: the index uses the plain value
+  { accessorKey: 'name', header: 'Name', size: 200, cell: ({ row }) => <span>{row.original.name}</span> },
+  { accessorKey: 'score', header: 'Score', size: 100, cell: ({ row }) => <span>{row.original.score} pts</span> },
+  { accessorKey: 'city', header: 'City', size: 140 },
 ]
 
-describe('VirtualGridTable with native find', () => {
+describe('VirtualGridTable native Find DOM', () => {
   let root: Root | undefined
   let el: HTMLDivElement
 
@@ -47,6 +37,7 @@ describe('VirtualGridTable with native find', () => {
     act(() => root?.unmount())
     el.remove()
     window.localStorage.clear()
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
   })
 
   const render = (node: React.ReactNode) => {
@@ -55,164 +46,55 @@ describe('VirtualGridTable with native find', () => {
     root = createRoot(el)
     act(() => root!.render(node))
   }
-  const table = (data: Person[], extra: Partial<React.ComponentProps<typeof VirtualGridTable<Person>>> = {}) => (
-    <VirtualGridTable<Person> tableId="t" data={data} columns={columns} displayMode="table" nativeFind {...extra} />
+  const table = (rows: Person[], nativeFind = true, extra: Partial<React.ComponentProps<typeof VirtualGridTable<Person>>> = {}) => (
+    <VirtualGridTable<Person> tableId="t" data={rows} columns={columns} displayMode="table" nativeFind={nativeFind} {...extra} />
   )
-  const lines = (k = 0) => el.querySelector(`[data-sp-chunk="${k}"]`)!.textContent!.split('\n').map((l) => l.split(/\t+/).map((c) => c.trim()).filter(Boolean))
 
-  it('holds the cell text of every row, in the order of the table, one chunk per 100 rows', () => {
-    render(table(people(250)))
-    expect(el.querySelectorAll('[data-sp-chunk]')).toHaveLength(3)
-    expect(lines(0)[0]).toEqual(['name0', '0 pts', 'Riga'])
-    expect(lines(2)[49]).toEqual(['name249', `${(249 * 7) % 50} pts`, 'Oslo'])
+  it('uses the displayed cell nodes for all rows without a proxy or inert duplicate', () => {
+    render(table(data(250)))
+    expect(el.querySelectorAll('.body-row')).toHaveLength(250)
+    expect(el.querySelectorAll('.native-find-index, [data-find-index], [inert]')).toHaveLength(0)
+    const last = el.querySelector('[data-row="249"] .td')!
+    expect(last.textContent).toBe('name249')
+    expect(last.querySelectorAll('[inert], [hidden], [data-find-index]').length).toBe(0)
+    expect(last.querySelector('.sticky-surface')?.textContent).toBe('name249')
+    expect(last.querySelector('.sticky-surface')?.childNodes[0]?.textContent).toBe('name249')
+    expect(el.querySelectorAll('.td').length).toBe(250 * 3)
   })
 
-  it('puts the first row below the header', () => {
-    render(table(people(10)))
-    expect(el.querySelector<HTMLElement>('[data-sp-chunk]')!.style.top).toBe('46px')
+  it('keeps repeated text as distinct native text occurrences in separate cells', () => {
+    const repeated = [{ id: 1, name: 'matchword', city: 'matchword', score: 1 }]
+    render(table(repeated))
+    const cells = [...el.querySelectorAll('.td')].filter((cell) => cell.textContent === 'matchword')
+    expect(cells).toHaveLength(2)
+    expect(cells[0]).not.toBe(cells[1])
+    expect(cells.every((cell) => cell.querySelectorAll('[inert]').length === 0)).toBe(true)
   })
 
-  it('draws no index when native find is off or in card mode', () => {
-    render(table(people(10), { nativeFind: false }))
-    expect(el.querySelectorAll('[data-sp-chunk]')).toHaveLength(0)
-    act(() => root!.unmount())
-    el.remove()
-    render(table(people(10), { displayMode: 'card' }))
-    expect(el.querySelectorAll('[data-sp-chunk]')).toHaveLength(0)
+  it('keeps normal virtual rendering when native Find is off', () => {
+    render(table(data(250), false))
+    expect(el.querySelectorAll('.body-row').length).toBeLessThan(250)
+    expect(el.querySelectorAll('.native-find-index, [data-find-index], [inert]')).toHaveLength(0)
   })
 
-  it('builds the index again, in the new order, after a sort', () => {
-    const sorted: SortingState = [{ id: 'score', desc: true }]
-    render(table(people(250), { sorting: [] }))
-    const before = lines(0)[0][0]
-    act(() => root!.render(table(people(250), { sorting: sorted, onSortingChange: () => {} })))
-    expect(lines(0)[0][0]).not.toBe(before)
-    const scores = lines(0).map((l) => Number(l[1].split(' ')[0]))
-    expect(scores).toEqual([...scores].sort((a, b) => b - a))
+  it('keeps the complete real-text table in auto mode on a narrow viewport', () => {
+    vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener() {}, removeEventListener() {} }))
+    render(table(data(10), true, { displayMode: 'auto' }))
+    expect(el.querySelector('.table-inner.native-find')).not.toBeNull()
+    expect(el.querySelectorAll('.body-row')).toHaveLength(10)
+    expect(el.querySelector('[data-row="9"] .td')?.textContent).toBe('name9')
+    expect(el.querySelectorAll('.native-find-index, [data-find-index], [inert]')).toHaveLength(0)
   })
 
-  it('builds the index again for a filter or new data', () => {
-    let find: NativeFind | null = null
-    const onFind = (f: NativeFind | null) => (find = f)
-    render(table(people(250), { onFind }))
-    expect(find!.chunkCount).toBe(3)
-    act(() => root!.render(table(people(250).filter((p) => p.city === 'Oslo'), { onFind })))
-    expect(find!.chunkCount).toBe(2) // 125 rows left
-    expect(lines(0).every((l) => l[2] === 'Oslo')).toBe(true)
-    act(() => root!.render(table(people(30, 1000), { onFind })))
-    expect(lines(0)[0][0]).toBe('name1000')
-  })
-
-  it('follows the expanded rows of a tree, with the group row in its place', () => {
-    const tree: Person[] = [{ id: 1, name: 'group', city: '', score: 1, sub: people(150, 10) }]
-    render(
-      table(tree, {
-        getSubRows: (row) => row.sub,
-        defaultExpanded: true,
-        getRowId: (row) => String(row.id) + row.name,
-      }),
-    )
-    expect(el.querySelectorAll('[data-sp-chunk]')).toHaveLength(2) // 151 rows
-    expect(lines(0)[0][0]).toBe('group')
-    expect(lines(0)[1][0]).toBe('name10')
-    act(() => root!.unmount())
-    el.remove()
-    window.localStorage.clear() // the first table saved its expanded state
-    render(table(tree, { getSubRows: (row) => row.sub, defaultExpanded: false, getRowId: (row) => String(row.id) + row.name }))
-    expect(el.querySelectorAll('[data-sp-chunk]')).toHaveLength(1) // the group row alone
-  })
-
-  it('keeps the right-aligned column text in its own cell, between the tabs of its neighbours', () => {
-    render(table(people(5)))
-    // columns: name 200 px (0..200), score 100 px (200..300), city 140 px. Padding is 1.25rem = 20 px. The tab stop is 10 px.
-    const chunk = el.querySelector('[data-sp-chunk="0"]')!
-    const line = chunk.textContent!.split('\n')[1]
-    expect(line.split(/\t+/).map((c) => c.trim()).filter(Boolean)).toEqual(['name1', '7 pts', 'Oslo'])
-  })
-
-  it('places a default two-line match on its supplied line geometry', () => {
-    const two: ColumnDef<Person>[] = [
-      {
-        accessorKey: 'name',
-        header: 'Name',
-        size: 200,
-        meta: {
-          fixed: true,
-          findText: (row) => [`@${row.original.name}`, row.original.name],
-          findLines: [{ dx: 30, dy: -7 }, { dx: 30, dy: 9 }],
-        } as ColumnMeta<Person>,
-        cell: ({ row }) => <IndexedText text={row.original.name} />,
-      },
-      columns[2],
+  it('preserves rich displayed cell content and its interaction nodes', () => {
+    const rich: ColumnDef<Person>[] = [
+      { accessorKey: 'name', header: 'Name', cell: () => <a href="/person/1"><strong>First line</strong><span>Second line</span></a> },
+      { accessorKey: 'city', header: 'City', cell: () => <button type="button" onClick={() => {}}>Open</button> },
     ]
-    render(table(people(5), { columns: two, findFontMatch: false }))
-    const spans = [...el.querySelectorAll<HTMLElement>('[data-sp-chunk="0"] span')]
-    expect(spans.slice(0, 4).map((span) => [span.textContent, getComputedStyle(span).top])).toEqual([
-      ['@name0', '-7px'],
-      ['name0', '9px'],
-      ['@name1', '-7px'],
-      ['name1', '9px'],
-    ])
-    expect(el.querySelector('[data-sp-chunk="0"]')!.textContent).toContain('@name1\tname1')
-  })
-
-  it('places each line on its own baseline when font matching is enabled after mount', () => {
-    const two: ColumnDef<Person>[] = [
-      {
-        accessorKey: 'name',
-        header: 'Name',
-        size: 200,
-        meta: {
-          fixed: true,
-          findText: (row) => [`@${row.original.name}`, `Name of ${row.original.id}`],
-          findLines: [
-            { dx: 30, dy: -7 },
-            { dx: 30, dy: 9 },
-          ],
-        } as ColumnMeta<Person>,
-        cell: ({ row }) => <IndexedText text={row.original.name} />,
-      },
-      columns[2],
-    ]
-    const data = people(5)
-    render(table(data, { columns: two }))
-    const defaultSpans = [...el.querySelectorAll<HTMLElement>('[data-sp-chunk="0"] > span')]
-    expect(defaultSpans.slice(0, 2).map((span) => getComputedStyle(span).top)).toEqual(['-7px', '9px'])
-    expect(el.querySelector<HTMLElement>('[data-sp-chunk="0"]')!.style.font).toContain('monospace')
-    act(() => root!.render(table(data, { columns: two, findFontMatch: true })))
-    const chunk = el.querySelector('[data-sp-chunk="0"]')!
-    const spans = [...chunk.querySelectorAll<HTMLElement>(':scope > span')]
-    expect(spans.map((sp) => sp.textContent).filter((t) => t !== 'Oslo' && t !== 'Rome' && t !== 'Paris').slice(0, 4)).toEqual(['@name0', 'Name of 0', '@name1', 'Name of 1'])
-    expect(getComputedStyle(spans[0]).position).toBe('relative')
-    expect(getComputedStyle(spans[0]).top).toBe('-7px')
-    expect(getComputedStyle(spans[1]).top).toBe('9px')
-    // the lines are in the row text, in the order of the cell, before the next cell
-    const row1 = chunk.textContent!.split('\n')[1]
-    expect(row1.split(/\t+/).filter(Boolean)).toEqual(['@name1', 'Name of 1', 'Oslo'])
-  })
-
-  it('positions multi-line text with the index font when findFontMatch is off', () => {
-    const two: ColumnDef<Person>[] = [
-      {
-        accessorKey: 'name',
-        header: 'Name',
-        size: 200,
-        meta: {
-          fixed: true,
-          findText: (row) => [`@${row.original.name}`, `Name of ${row.original.id}`],
-          findLines: [
-            { dx: 30, dy: -7 },
-            { dx: 30, dy: 9 },
-          ],
-        } as ColumnMeta<Person>,
-        cell: ({ row }) => <IndexedText text={row.original.name} />,
-      },
-      columns[2],
-    ]
-    render(<VirtualGridTable<Person> tableId="t3" data={people(5)} columns={two} displayMode="table" nativeFind />)
-    const chunk = el.querySelector('[data-sp-chunk="0"]')!
-    expect(chunk.querySelectorAll('span')).toHaveLength(10)
-    const row1 = chunk.textContent!.split('\n')[1]
-    expect(row1.split(/\t+/).filter(Boolean)).toEqual(['@name1', 'Name of 1', 'Oslo'])
+    render(<VirtualGridTable<Person> tableId="rich" data={data(1)} columns={rich} displayMode="table" nativeFind />)
+    const row = el.querySelector('.body-row')!
+    expect(row.querySelector('a[href="/person/1"]')?.textContent).toBe('First lineSecond line')
+    expect(row.querySelector('button')?.textContent).toBe('Open')
+    expect(row.querySelector('[inert]')).toBeNull()
   })
 })

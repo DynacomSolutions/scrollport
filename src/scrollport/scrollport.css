@@ -26,13 +26,29 @@
   position: relative;
 }
 
-/* The rows draw only a background. All text sits in the index chunks, which lie over the rows. */
+/* The row text is both visible content and the source for browser Find. */
 .sp-row {
   position: absolute;
   left: 0;
   right: 0;
   box-sizing: border-box;
   border-bottom: 1px solid var(--sp-line);
+  contain: layout style;
+}
+
+.sp-cell {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: 0 8px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--sp-fg);
+  user-select: text;
 }
 
 .sp-row-odd {
