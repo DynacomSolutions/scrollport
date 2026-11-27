@@ -126,8 +126,34 @@ function includesInsensitive(value: string, query: string): boolean {
 /** The two-line user cell: an avatar, then a handle above a name. */
 const USER_CELL = { avatar: 22, gapRem: 0.55, primaryLine: 18, secondaryLine: 14 }
 
-function highlightText(text: string, _query: string): ReactNode {
-  return text ?? ''
+function highlightText(text: string, query: string): ReactNode {
+  const source = text ?? ''
+  const needle = query.trim()
+  if (!needle) {
+    return source
+  }
+
+  const lowerSource = source.toLowerCase()
+  const lowerNeedle = needle.toLowerCase()
+  const parts: ReactNode[] = []
+  let cursor = 0
+  let matchIndex = lowerSource.indexOf(lowerNeedle)
+
+  while (matchIndex !== -1) {
+    if (matchIndex > cursor) {
+      parts.push(source.slice(cursor, matchIndex))
+    }
+    const end = matchIndex + lowerNeedle.length
+    parts.push(<mark key={`${matchIndex}-${end}`} className="cell-highlight">{source.slice(matchIndex, end)}</mark>)
+    cursor = end
+    matchIndex = lowerSource.indexOf(lowerNeedle, cursor)
+  }
+
+  if (cursor < source.length) {
+    parts.push(source.slice(cursor))
+  }
+
+  return parts.length > 0 ? parts : source
 }
 
 function uniqueSorted(values: string[]): string[] {
@@ -387,7 +413,9 @@ export function recordIdValue(row: Pick<TableRow, 'id' | 'rowType'>): number | u
   return row.rowType === 'department' || typeof row.id !== 'number' ? undefined : row.id
 }
 
-function App() {
+export type NativeFindTableDemoProps = { rowCount?: number; nativeFind?: boolean; tableDisplayMode?: TableDisplayMode }
+
+export function NativeFindTableDemo({ rowCount = DEMO_ROWS, nativeFind = true, tableDisplayMode }: NativeFindTableDemoProps = {}) {
   const initialSearchState = useMemo(() => parseSearchStateFromUrl(TABLE_ID), [])
   const initialSortingState = useMemo(() => parseSortingStateFromUrl(TABLE_ID), [])
   const initialAutoScrollX = useMemo(() => {
@@ -398,8 +426,8 @@ function App() {
   const [searchState, setSearchState] = useState<OmniSearchState>(initialSearchState)
   const [sorting, setSorting] = useState<SortingState>(initialSortingState)
   const [autoScrollX, setAutoScrollX] = useState<'left' | 'right' | 'off'>(initialAutoScrollX)
-  const [displayMode, setDisplayMode] = useState<TableDisplayMode>(initialDisplayMode)
-  const baseData = useMemo(() => generateData(DEMO_ROWS), [])
+  const [displayMode, setDisplayMode] = useState<TableDisplayMode>(tableDisplayMode ?? initialDisplayMode)
+  const baseData = useMemo(() => generateData(rowCount), [rowCount])
   const rawSearchPill = searchState.pills.find((pill) => pill.columnId === RAW_SEARCH_PILL_ID)
   const rawQuery = rawSearchPill?.value.trim() ?? (searchState.pills.length === 0 ? searchState.globalQuery.trim() : '')
   // Kept between renders: a new array each time would filter all rows again (and build the find index again) on every render.
@@ -814,7 +842,7 @@ function App() {
             isSubheaderRow={(row) => row.original.rowType === 'department'}
             canSubheaderStick={(row) => row.original.rowType === 'department' && row.getIsExpanded()}
             autoExpandedRowIds={autoExpandedRowIds}
-            nativeFind
+            nativeFind={nativeFind}
             defaultExpanded
           />
         </div>
@@ -823,4 +851,4 @@ function App() {
   )
 }
 
-export default App
+export default NativeFindTableDemo

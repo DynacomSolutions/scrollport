@@ -6,4 +6,5 @@ export default defineConfig({
   base: './',
   plugins: [react()],
   test: { environment: 'jsdom' },
+  build: { rollupOptions: { input: { demo: 'index.html', nativeFindEmbed: 'src/embed.tsx' } } },
 })

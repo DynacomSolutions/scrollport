@@ -23,26 +23,19 @@
 }
 
 .sp-host {
-  position: relative;
+  display: block;
 }
 
-/* The row text is both visible content and the source for browser Find. */
-.sp-row {
-  position: absolute;
-  left: 0;
-  right: 0;
-  box-sizing: border-box;
-  border-bottom: 1px solid var(--sp-line);
-  contain: layout style;
+.sp-row-group {
+  align-content: start;
 }
 
 .sp-cell {
-  position: absolute;
-  top: 0;
-  bottom: 0;
+  min-width: 0;
   display: flex;
   align-items: center;
   box-sizing: border-box;
+  border-bottom: 1px solid var(--sp-line);
   overflow: hidden;
   padding: 0 8px;
   white-space: nowrap;
@@ -51,6 +44,6 @@
   user-select: text;
 }
 
-.sp-row-odd {
+.sp-cell-odd {
   background: var(--sp-stripe);
 }

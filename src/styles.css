@@ -443,7 +443,7 @@ body {
 }
 
 /* Native Find sticks the real department row instead of adding a second copy. */
-.table-inner.native-find .row-department {
+.table-inner.native-find .row-department.native-find-sticky-subheader {
   position: sticky;
   top: 46px;
   z-index: 20;

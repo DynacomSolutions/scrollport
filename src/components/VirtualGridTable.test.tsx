@@ -71,6 +71,40 @@ describe('VirtualGridTable native Find DOM', () => {
     expect(cells.every((cell) => cell.querySelectorAll('[inert]').length === 0)).toBe(true)
   })
 
+  it('applies the native sticky class only when canSubheaderStick permits it', () => {
+    type Group = { id: string; name: string; children?: Group[] }
+    const groups: Group[] = [
+      { id: 'stick', name: 'Stick group', children: [{ id: 'stick-child', name: 'Child A' }] },
+      { id: 'no-stick', name: 'No stick group', children: [{ id: 'no-stick-child', name: 'Child B' }] },
+    ]
+    const groupColumns: ColumnDef<Group>[] = [{ accessorKey: 'name', header: 'Name' }]
+    const groupTable = (nativeFind: boolean) => (
+      <VirtualGridTable<Group>
+        tableId="sticky-predicate"
+        data={groups}
+        columns={groupColumns}
+        displayMode="table"
+        nativeFind={nativeFind}
+        defaultExpanded={false}
+        getSubRows={(row) => row.children}
+        isSubheaderRow={(row) => row.depth === 0}
+        canSubheaderStick={(row) => row.original.id === 'stick'}
+      />
+    )
+
+    render(groupTable(true))
+    const nativeRows = [...el.querySelectorAll<HTMLElement>('.body-row.row-department')]
+    expect(nativeRows.map((row) => row.textContent)).toEqual(['Stick group', 'No stick group'])
+    expect(nativeRows.map((row) => row.classList.contains('native-find-sticky-subheader'))).toEqual([true, false])
+    expect(el.querySelectorAll('.department-sticky-overlay')).toHaveLength(0)
+
+    render(groupTable(false))
+    const scroller = el.querySelector<HTMLElement>('.table-wrap')!
+    scroller.scrollTop = 92
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(el.querySelectorAll('.department-sticky-overlay')).toHaveLength(1)
+  })
+
   it('keeps normal virtual rendering when native Find is off', () => {
     render(table(data(250), false))
     expect(el.querySelectorAll('.body-row').length).toBeLessThan(250)
@@ -96,5 +130,17 @@ describe('VirtualGridTable native Find DOM', () => {
     expect(row.querySelector('a[href="/person/1"]')?.textContent).toBe('First lineSecond line')
     expect(row.querySelector('button')?.textContent).toBe('Open')
     expect(row.querySelector('[inert]')).toBeNull()
+  })
+
+  it('keeps native cell text in sorted order and updates it when data is filtered', () => {
+    const people = data(4)
+    const sorted = table(people, true, { sorting: [{ id: 'name', desc: true }] })
+    render(sorted)
+    const names = [...el.querySelectorAll('.body-row')].map((row) => row.querySelector('.td')?.textContent)
+    expect(names).toEqual(['name3', 'name2', 'name1', 'name0'])
+
+    act(() => root!.render(table(people.filter((person) => person.city === 'Oslo'), true, { sorting: [{ id: 'name', desc: true }] })))
+    expect([...el.querySelectorAll('.body-row')].map((row) => row.querySelector('.td')?.textContent)).toEqual(['name3', 'name1'])
+    expect(el.querySelectorAll('.native-find-index, [data-find-index], [inert]')).toHaveLength(0)
   })
 })

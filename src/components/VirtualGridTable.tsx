@@ -302,9 +302,9 @@ export function VirtualGridTable<TData extends object>({
     .map((row, index) => ({ row, index }))
     .filter(({ row }) => (isSubheaderRow ? isSubheaderRow(row) : false))
 
-  const candidateSubheaders = subheaderRows.filter(
-    ({ row, index }) => (canSubheaderStick ? canSubheaderStick(row) : true) && index * rowHeight <= scrollTop,
-  )
+  const stickableSubheaders = subheaderRows.filter(({ row }) => (canSubheaderStick ? canSubheaderStick(row) : true))
+  const nativeStickySubheaderIds = findEnabled ? new Set(stickableSubheaders.map(({ row }) => row.id)) : new Set<string>()
+  const candidateSubheaders = stickableSubheaders.filter(({ index }) => index * rowHeight <= scrollTop)
 
   const activeStickySubheader = candidateSubheaders.length > 0 ? candidateSubheaders[candidateSubheaders.length - 1] : null
   const activeStickySubheaderRow = activeStickySubheader?.row ?? null
@@ -600,6 +600,7 @@ export function VirtualGridTable<TData extends object>({
           const cellsByColumnId = new Map(cells.map((cell) => [cell.column.id, cell]))
 
           const rowIsSubheader = isSubheaderRow ? isSubheaderRow(row) : false
+          const isNativeFindStickySubheader = rowIsSubheader && nativeStickySubheaderIds.has(row.id)
           const isSourceUnderStickyOverlay =
             showStickySubheaderOverlay && rowIsSubheader && row.id === activeStickySubheaderId
 
@@ -608,7 +609,8 @@ export function VirtualGridTable<TData extends object>({
               key={row.id}
               data-row={rowIndex}
               className={`grid-row body-row${rowIsSubheader ? ' row-department' : ' row-user'}${
-                isSourceUnderStickyOverlay ? ' source-under-sticky-overlay' : ''
+                isNativeFindStickySubheader ? ' native-find-sticky-subheader' : ''
+              }${isSourceUnderStickyOverlay ? ' source-under-sticky-overlay' : ''
               }${rowIndex === rows.length - 1 ? ' is-last-row' : ''}`}
               style={{
                 gridTemplateColumns,
