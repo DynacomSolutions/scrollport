@@ -195,7 +195,6 @@ export function NativeFindGrid(props: NativeFindGridProps) {
       group.className = 'sp-row-group'
       group.dataset.groupStart = String(start)
       group.dataset.groupCount = String(end - start)
-      group.style.contentVisibility = 'auto'
       group.style.display = 'grid'
       group.style.gridTemplateColumns = `repeat(${columns}, ${columnWidth}px)`
       group.style.gridAutoRows = `${rowHeight}px`

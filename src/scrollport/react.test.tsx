@@ -73,6 +73,15 @@ describe('NativeFindGrid real text', () => {
     expect(groups[4].querySelectorAll('.sp-cell')).toHaveLength(500)
   })
 
+  it('sets no inline content-visibility on groups, so hidden="until-found" keeps its browser style', () => {
+    render(<NativeFindGrid rowCount={600} columns={2} getRow={row} />)
+    const groups = [...el.querySelectorAll<HTMLElement>('.sp-row-group')]
+    expect(groups.length).toBeGreaterThan(1)
+    expect(groups.every((group) => group.style.contentVisibility === '')).toBe(true)
+    const css = gridStyles.replace(/\/\*[\s\S]*?\*\//g, '')
+    expect(css).toMatch(/\.sp-row-group\[hidden=['"]until-found['"]\]\s*\{[^}]*content-visibility:\s*hidden/)
+  })
+
   it('keeps the browser-revealed group visible until another match pins a group', () => {
     render(<NativeFindGrid rowCount={1251} columns={2} getRow={row} />)
     const scroller = el.querySelector<HTMLElement>('.sp-grid')!

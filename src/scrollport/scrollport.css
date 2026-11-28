@@ -51,6 +51,15 @@
 
 .sp-row-group {
   align-content: start;
+  content-visibility: auto;
+}
+
+/*
+ * An inline content-visibility would override this rule of the browser for hidden="until-found". Keep the value in the
+ * style sheet, so the hidden group stays findable and the browser fires beforematch when it reveals the group.
+ */
+.sp-row-group[hidden='until-found'] {
+  content-visibility: hidden;
 }
 
 .sp-cell {

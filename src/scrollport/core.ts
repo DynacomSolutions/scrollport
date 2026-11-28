@@ -596,8 +596,8 @@ const warnedHosts = new WeakSet<HTMLElement>()
 /** Number of different source rows that have displayed text in the host. */
 export function renderedRowCount(host: HTMLElement): number {
   const rows = new Set<string>()
+  // Development check only: a plain scan, without the hidden and inert tests of the audit.
   for (const element of host.querySelectorAll<HTMLElement>('[data-row]')) {
-    if (element.closest('[inert], [hidden]:not([hidden="until-found"])')) continue
     if (element.dataset.row !== undefined) rows.add(element.dataset.row)
   }
   return rows.size
