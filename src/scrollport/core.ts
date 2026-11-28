@@ -200,10 +200,23 @@ export type NativeFindAudit = {
 /** Inspection of displayed text. Browser Find owns matching, query state, paint, and navigation. */
 export type NativeFind = {
   readonly mode: NativeFindMode
+  /**
+   * @deprecated Browser Find keeps its own query and the page cannot read it. This value is always an empty string.
+   * It stays so that code written for the earlier index still compiles.
+   */
+  readonly query: string
+  /** Number of rendered row groups, or of rendered rows when the host has no groups. Read when asked. */
   readonly chunkCount: number
+  /** Characters of displayed cell text in the host. Counted when this value is read, not at mount. */
   readonly textLength: number
+  /** Time in ms that the observer took to attach. */
   readonly buildMs: number
   readonly attachedChunks: number
+  /**
+   * @deprecated The observer holds no query or sparse state, so there is nothing to reset. This function does nothing.
+   * It stays so that code written for the earlier index still compiles.
+   */
+  reset: () => void
   /** Compare source data with real cell text in the host. */
   audit: (query: string) => NativeFindAudit
   destroy: () => void
@@ -570,6 +583,26 @@ function actualRow(cell: HTMLElement): number | null {
   return Number.isInteger(value) && value >= 0 ? value : null
 }
 
+/** True in development builds. Production builds stay silent. */
+function isDevelopment(): boolean {
+  const meta = (import.meta as unknown as { env?: { DEV?: boolean } }).env
+  if (meta?.DEV !== undefined) return meta.DEV
+  const nodeEnv = (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process?.env?.NODE_ENV
+  return nodeEnv !== undefined && nodeEnv !== 'production'
+}
+
+const warnedHosts = new WeakSet<HTMLElement>()
+
+/** Number of different source rows that have displayed text in the host. */
+export function renderedRowCount(host: HTMLElement): number {
+  const rows = new Set<string>()
+  for (const element of host.querySelectorAll<HTMLElement>('[data-row]')) {
+    if (element.closest('[inert], [hidden]:not([hidden="until-found"])')) continue
+    if (element.dataset.row !== undefined) rows.add(element.dataset.row)
+  }
+  return rows.size
+}
+
 /** Inspect caller-rendered text. The host must own the displayed cells. */
 export function createNativeFind(options: NativeFindImplementationOptions): NativeFind {
   const { host, rowCount, onActiveRow } = options
@@ -586,9 +619,17 @@ export function createNativeFind(options: NativeFindImplementationOptions): Nati
     const value = 'getRowText' in options && options.getRowText ? cleanLine(options.getRowText(row)) : ''
     return value.split('\t').map(cleanCell)
   }
-  const cellsAtMount = actualCells(host)
-  const length = cellsAtMount.reduce((sum, cell) => sum + visibleCellLines(cell).join('\n').length, 0)
   const buildMs = now() - started
+  if (isDevelopment() && rowCount > 0 && !warnedHosts.has(host)) {
+    const rendered = renderedRowCount(host)
+    if (rendered < rowCount) {
+      warnedHosts.add(host)
+      console.warn(
+        `scrollport: rowCount is ${rowCount}, but the host shows ${rendered} rows. Browser Find can reach only displayed rows. ` +
+          'Render every row (NativeFindGrid does this), or accept that Find covers the rendered rows only.',
+      )
+    }
+  }
 
   const onSelectionChange = () => {
     const selection = doc.getSelection()
@@ -604,22 +645,15 @@ export function createNativeFind(options: NativeFindImplementationOptions): Nati
   doc.addEventListener('selectionchange', onSelectionChange)
   let destroyed = false
 
+  const sourceLines = (row: number): string[][] =>
+    'getRichRowCells' in options && options.getRichRowCells
+      ? options.getRichRowCells(row).map(expectedCellLines)
+      : 'getRowCells' in options && options.getRowCells
+        ? options.getRowCells(row).map((text) => [text])
+        : expectedCells(row).map((text) => [text])
+
   const audit = (query: string): NativeFindAudit => {
     const needle = query.toLocaleLowerCase()
-    const expectedByRow = new Map<number, number>()
-    let expectedOccurrences = 0
-    for (let row = 0; row < rowCount; row++) {
-      const sourceCells = 'getRichRowCells' in options && options.getRichRowCells
-        ? options.getRichRowCells(row).map(expectedCellLines)
-        : 'getRowCells' in options && options.getRowCells
-          ? options.getRowCells(row).map((text) => [text])
-          : expectedCells(row).map((text) => [text])
-      const matches = sourceCells.reduce((sum, lines) => sum + lineOccurrences(lines, needle), 0)
-      if (matches) {
-        expectedByRow.set(row, matches)
-        expectedOccurrences += matches
-      }
-    }
     const actualByRow = new Map<number, number>()
     const actualCellsByRow = new Map<number, string[]>()
     const countedCells = actualCells(host)
@@ -637,16 +671,21 @@ export function createNativeFind(options: NativeFindImplementationOptions): Nati
       entries.push(text)
       actualCellsByRow.set(row, entries)
     }
+    // One pass over the source rows: the accessor runs once for each row.
+    const expectedByRow = new Map<number, number>()
+    let expectedOccurrences = 0
     const corrupt: number[] = []
     for (let row = 0; row < rowCount; row++) {
-      const sourceCells = 'getRichRowCells' in options && options.getRichRowCells
-        ? options.getRichRowCells(row).map(expectedCellLines)
-        : 'getRowCells' in options && options.getRowCells
-          ? options.getRowCells(row).map((text) => [text])
-          : expectedCells(row).map((text) => [text])
-      const expected = sourceCells.map((lines) => lines.join('\n').toLocaleLowerCase())
+      const cells = sourceLines(row)
+      const matches = cells.reduce((sum, lines) => sum + lineOccurrences(lines, needle), 0)
+      if (matches) {
+        expectedByRow.set(row, matches)
+        expectedOccurrences += matches
+      }
       const actual = actualCellsByRow.get(row) ?? []
-      if (expected.length !== actual.length || expected.some((text, index) => text !== actual[index])) corrupt.push(row)
+      if (cells.length !== actual.length || cells.some((lines, index) => lines.join('\n').toLocaleLowerCase() !== actual[index])) {
+        corrupt.push(row)
+      }
     }
     const other: string[] = []
     if (needle) {
@@ -685,12 +724,18 @@ export function createNativeFind(options: NativeFindImplementationOptions): Nati
 
   return {
     mode: 'full',
-    chunkCount: renderedChunkCount(host),
-    textLength: length,
+    query: '',
+    get chunkCount() {
+      return renderedChunkCount(host)
+    },
+    get textLength() {
+      return actualCells(host).reduce((sum, cell) => sum + visibleCellLines(cell).join('\n').length, 0)
+    },
     buildMs,
     get attachedChunks() {
       return renderedChunkCount(host)
     },
+    reset() {},
     audit,
     destroy() {
       if (destroyed) return

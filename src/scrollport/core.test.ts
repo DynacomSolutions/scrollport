@@ -408,6 +408,51 @@ describe('createNativeFind real DOM inspection', () => {
     find.destroy()
   })
 
+  it('keeps the deprecated query and reset members as harmless shims', () => {
+    const scroller = document.createElement('div')
+    const host = document.createElement('div')
+    scroller.append(host)
+    host.innerHTML = '<div data-row="0"><span class="sp-cell">needle</span></div>'
+    const find = createNativeFind({ scroller, host, rowCount: 1, rowHeight: 32, getRowText: () => 'needle' })
+    expect(find.query).toBe('')
+    expect(() => find.reset()).not.toThrow()
+    expect(find.audit('needle')).toMatchObject({ findable: 1, total: 1 })
+    find.destroy()
+  })
+
+  it('reads textLength and chunkCount when asked, not at mount', () => {
+    const scroller = document.createElement('div')
+    const host = document.createElement('div')
+    scroller.append(host)
+    host.innerHTML = '<div data-row="0"><span class="sp-cell">abc</span></div>'
+    const find = createNativeFind({ scroller, host, rowCount: 2, rowHeight: 32, getRowText: () => 'abc' })
+    expect(find.textLength).toBe(3)
+    host.insertAdjacentHTML('beforeend', '<div data-row="1"><span class="sp-cell">de</span></div>')
+    expect(find.textLength).toBe(5)
+    expect(find.chunkCount).toBe(2)
+    find.destroy()
+  })
+
+  it('warns once in development when the host shows fewer rows than rowCount', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const make = (rows: number) => {
+      const scroller = document.createElement('div')
+      const host = document.createElement('div')
+      scroller.append(host)
+      host.innerHTML = Array.from({ length: rows }, (_, row) => `<div data-row="${row}"><span class="sp-cell">r${row}</span></div>`).join('')
+      return { scroller, host }
+    }
+    const partial = make(2)
+    createNativeFind({ ...partial, rowCount: 100, rowHeight: 32, getRowText: (row) => `r${row}` }).destroy()
+    createNativeFind({ ...partial, rowCount: 100, rowHeight: 32, getRowText: (row) => `r${row}` }).destroy()
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0][0]).toContain('rowCount is 100')
+    const full = make(3)
+    createNativeFind({ ...full, rowCount: 3, rowHeight: 32, getRowText: (row) => `r${row}` }).destroy()
+    expect(warn).toHaveBeenCalledTimes(1)
+    warn.mockRestore()
+  })
+
   it('reports the selected real row without capturing browser Find query state', () => {
     const scroller = document.createElement('div')
     const host = document.createElement('div')

@@ -8,6 +8,11 @@ import { VirtualGridTable, type ColumnMeta } from './components/VirtualGridTable
 type RowData = { id: string }
 export const meta: ColumnMeta<RowData> = { findText: row => row.original.id }
 export const observeFind = (find: NativeFind | null) => find?.audit('needle')
+/** Deprecated members stay in the type. This line fails to compile when one is removed. */
+export const readDeprecated = (find: NativeFind): string => {
+  find.reset()
+  return find.query
+}
 export const createFind = (scroller: HTMLElement, host: HTMLElement) =>
   createNativeFind({ scroller, host, rowCount: 1, rowHeight: 32, getRowText: () => 'needle' })
 export const sampleHooks = (scroller: RefObject<HTMLElement>, host: RefObject<HTMLElement>) => ({
