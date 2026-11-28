@@ -154,7 +154,9 @@ function highlightText(text: string, query: string): ReactNode {
     parts.push(source.slice(cursor))
   }
 
-  return parts.length > 0 ? parts : source
+  // One inline wrapper keeps the text and the marks in one inline formatting context. Without it, a flex parent
+  // makes every piece its own flex item, and native Find cannot match text across the pieces.
+  return parts.length > 0 ? <span className="cell-text">{parts}</span> : source
 }
 
 function uniqueSorted(values: string[]): string[] {

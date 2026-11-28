@@ -889,6 +889,11 @@ body {
   color: #111827;
 }
 
+/* Wraps highlighted cell text. As the only flex item of its parent, it holds the text and the marks as one inline run. */
+.cell-text {
+  min-width: 0;
+}
+
 .cell-highlight {
   background: #ffe58a;
   color: inherit;

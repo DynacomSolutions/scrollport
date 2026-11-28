@@ -1,6 +1,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import styles from './styles.css?raw'
 import { generateData } from './data'
 import NativeFindTableDemo, { recordIdValue, toTableRows } from './App'
 
@@ -99,5 +100,51 @@ describe('OmniSearch visible match highlighting', () => {
     expect(emailCell).toBeDefined()
     expect(emailCell?.querySelectorAll('mark.cell-highlight')).toHaveLength(4)
     expect(emailCell?.textContent).toBe('isabella.kelly674@acme.io')
+  })
+
+  describe('highlighted text for native Find', () => {
+    const search = (value: string) => {
+      render()
+      const input = host.querySelector<HTMLInputElement>('.omni-input')!
+      act(() => {
+        input.focus()
+        const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+        setValue.call(input, value)
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    }
+
+    it('keeps the text pieces and the marks of a cell in one inline element', () => {
+      search('a')
+      const marks = [...host.querySelectorAll<HTMLElement>('mark.cell-highlight')]
+      expect(marks.length).toBeGreaterThan(0)
+      for (const mark of marks) {
+        const wrapper = mark.parentElement!
+        expect(wrapper.matches('span.cell-text')).toBe(true)
+        expect([...wrapper.childNodes].every((node) => node.nodeType === Node.TEXT_NODE || (node as Element).matches('mark.cell-highlight'))).toBe(true)
+        // the wrapper is the only child of its parent, so the parent has one flex item and no mark is a flex item
+        expect(wrapper.parentElement!.childNodes).toHaveLength(1)
+      }
+    })
+
+    it('keeps an email cell as one contiguous text run when only a part of it is highlighted', () => {
+      search('northwind')
+      const cell = [...host.querySelectorAll<HTMLElement>('.td')].find((item) => /@northwind\.app$/.test(item.textContent ?? ''))
+      expect(cell).toBeDefined()
+      const wrapper = cell!.querySelector<HTMLElement>('.cell-text')!
+      expect(wrapper.textContent).toBe(cell!.textContent)
+      expect(wrapper.querySelectorAll('mark.cell-highlight')).toHaveLength(1)
+      expect(wrapper.childNodes.length).toBeGreaterThanOrEqual(3)
+    })
+
+    it('does not make the highlight or its wrapper a block or a flex container', () => {
+      // jsdom does not resolve this stylesheet (container queries), so the rules are read from its source
+      const rule = (selector: string) => [...styles.matchAll(new RegExp(`(?:^|\\}|\\*/)\\s*${selector.replace('.', '\\.')}\\s*\\{([^}]*)\\}`, 'g'))].map((match) => match[1]).join(';')
+      expect(rule('.cell-highlight')).toMatch(/background/)
+      expect(rule('.cell-text')).toMatch(/min-width/)
+      expect(rule('.cell-highlight')).not.toMatch(/display\s*:/)
+      expect(rule('.cell-text')).not.toMatch(/display\s*:\s*(?:flex|inline-flex|grid|inline-grid)/)
+    })
   })
 })
