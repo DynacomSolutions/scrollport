@@ -21,12 +21,124 @@ export type UseFindIndexOptions = Omit<NativeFindBase, 'scroller' | 'host' | 'on
   onFind?: (find: NativeFind | null) => void
 }
 
+type RowStyle = { display: string; gridTemplateColumns: string; paddingLeft: string; boxSizing: string; height: string }
+type OwnedRow = { index: number; cells: HTMLElement[]; style: RowStyle }
+type Fill = { run: () => void; release: () => void }
+type FillOptions = Pick<UseFindIndexOptions, 'rowCount' | 'rowHeight' | 'getRowText' | 'getRowCells' | 'getRichRowCells'> & { host: HTMLElement; tabSize: number; indent: number }
+
+/**
+ * Fill empty `.sp-row[data-row]` placeholders with cells. The fill owns the cells that it adds.
+ * `run` is safe to repeat: a row that already has its cells is not touched, so text nodes and selections stay.
+ */
+function createFill(options: FillOptions): Fill {
+  const { host, rowCount, rowHeight, tabSize, indent, getRowText, getRowCells, getRichRowCells } = options
+  const owned = new Map<HTMLElement, OwnedRow>()
+  const release = (row: HTMLElement, entry: OwnedRow) => {
+    for (const cell of entry.cells) cell.remove()
+    row.style.display = entry.style.display
+    row.style.gridTemplateColumns = entry.style.gridTemplateColumns
+    row.style.paddingLeft = entry.style.paddingLeft
+    row.style.boxSizing = entry.style.boxSizing
+    row.style.height = entry.style.height
+  }
+  const fillRow = (row: HTMLElement, rowIndex: number) => {
+    const cells: readonly NativeFindCell[] = getRichRowCells
+      ? getRichRowCells(rowIndex)
+      : getRowCells
+        ? getRowCells(rowIndex)
+        : (getRowText?.(rowIndex) ?? '').split('\t')
+    const style: RowStyle = { display: row.style.display, gridTemplateColumns: row.style.gridTemplateColumns, paddingLeft: row.style.paddingLeft, boxSizing: row.style.boxSizing, height: row.style.height }
+    row.style.display = 'grid'
+    row.style.gridTemplateColumns = `repeat(${Math.max(1, cells.length)}, ${tabSize}px)`
+    row.style.paddingLeft = `${indent}px`
+    row.style.boxSizing = 'border-box'
+    row.style.height = `${rowHeight}px`
+    const added: HTMLElement[] = []
+    for (const value of cells) {
+      const cell = host.ownerDocument.createElement('span')
+      cell.className = 'sp-cell'
+      cell.style.height = '100%'
+      if (typeof value === 'string') {
+        cell.textContent = value.replace(/[\t\r\n]+/g, ' ')
+      } else {
+        const lines = value.map((line) => typeof line === 'string' ? line : line.text)
+        lines.forEach((line, index) => {
+          if (index) cell.append(host.ownerDocument.createElement('br'))
+          cell.append(host.ownerDocument.createTextNode(line))
+        })
+      }
+      row.append(cell)
+      added.push(cell)
+    }
+    owned.set(row, { index: rowIndex, cells: added, style })
+  }
+  return {
+    run() {
+      for (const [row, entry] of owned) {
+        // Forget rows that React removed. Redo a row that now shows another source row.
+        if (!row.isConnected) owned.delete(row)
+        else if (Number(row.dataset.row) !== entry.index) {
+          release(row, entry)
+          owned.delete(row)
+        }
+      }
+      for (const row of host.querySelectorAll<HTMLElement>('.sp-row[data-row]')) {
+        if (owned.has(row) || row.childNodes.length) continue
+        const rowIndex = Number(row.dataset.row)
+        if (!Number.isInteger(rowIndex) || rowIndex < 0 || rowIndex >= rowCount) continue
+        fillRow(row, rowIndex)
+      }
+    },
+    release() {
+      for (const [row, entry] of owned) release(row, entry)
+      owned.clear()
+    },
+  }
+}
+
 /** Observe real text and report the controller lifecycle. */
 export function useFindIndex(scrollerRef: RefObject<HTMLElement>, hostRef: RefObject<HTMLElement>, options: UseFindIndexOptions) {
   const { rowCount, rowHeight, getRowText, getRowCells, getRichRowCells, columns, enabled = true, activeRowMs = 1500, materializeRows = false, materializeKey, onFind, ...base } = options
   const tabSize = options.tabSize ?? 120
   const indent = options.indent ?? 8
   const [activeRow, setActiveRow] = useState(-1)
+  const onFindRef = useRef(onFind)
+  const fillRef = useRef<Fill | null>(null)
+  const timerRef = useRef(0)
+
+  // The caller may pass a new function on each render. The observer must not restart for that.
+  useEffect(() => {
+    onFindRef.current = onFind
+  })
+
+  // Fill the placeholders. A change of source, size or layout removes the owned cells and fills them again.
+  // Layout effects run before the observer effect below, so the observer sees the cells, and no empty row paints.
+  useLayoutEffect(() => {
+    const host = hostRef.current
+    if (!enabled || !materializeRows || !host) return
+    const fill = createFill({ host, rowCount, rowHeight, tabSize, indent, getRowText, getRowCells, getRichRowCells })
+    fillRef.current = fill
+    fill.run()
+    return () => {
+      fillRef.current = null
+      fill.release()
+    }
+  }, [hostRef, enabled, materializeRows, rowCount, rowHeight, tabSize, indent, getRowText, getRowCells, getRichRowCells])
+
+  // The row window moved: fill the new rows only. Rows that stay in view keep their cells, so a selection survives.
+  useLayoutEffect(() => {
+    fillRef.current?.run()
+  }, [materializeKey])
+
+  // The reset timer lives outside the observer effect, so a change of the row window does not stop it.
+  useEffect(() => () => clearTimeout(timerRef.current), [])
+  const onActiveRow = useCallback((row: number) => {
+    setActiveRow(row)
+    clearTimeout(timerRef.current)
+    timerRef.current = window.setTimeout(() => setActiveRow(-1), activeRowMs)
+  }, [activeRowMs])
+
+  // Observe the host. A window move changes none of these inputs, so it neither restarts the observer nor calls onFind.
   useEffect(() => {
     const scroller = scrollerRef.current
     const host = hostRef.current
@@ -39,64 +151,15 @@ export function useFindIndex(scrollerRef: RefObject<HTMLElement>, hostRef: RefOb
           ? { getRowText }
           : null
     if (!source) return
-    let timer = 0
-    const ownedCells: HTMLElement[] = []
-    const rowStyles = new Map<HTMLElement, { display: string; gridTemplateColumns: string; paddingLeft: string; boxSizing: string; height: string }>()
-    const placeholders = materializeRows ? host.querySelectorAll<HTMLElement>('.sp-row[data-row]') : []
-    for (const row of placeholders) {
-      if (row.childNodes.length) continue
-      const rowIndex = Number(row.dataset.row)
-      if (!Number.isInteger(rowIndex) || rowIndex < 0 || rowIndex >= rowCount) continue
-      const cells: readonly NativeFindCell[] = getRichRowCells
-        ? getRichRowCells(rowIndex)
-        : getRowCells
-          ? getRowCells(rowIndex)
-          : (getRowText?.(rowIndex) ?? '').split('\t')
-      rowStyles.set(row, { display: row.style.display, gridTemplateColumns: row.style.gridTemplateColumns, paddingLeft: row.style.paddingLeft, boxSizing: row.style.boxSizing, height: row.style.height })
-      row.style.display = 'grid'
-      row.style.gridTemplateColumns = `repeat(${Math.max(1, cells.length)}, ${tabSize}px)`
-      row.style.paddingLeft = `${indent}px`
-      row.style.boxSizing = 'border-box'
-      row.style.height = `${rowHeight}px`
-      for (const value of cells) {
-        const cell = host.ownerDocument.createElement('span')
-        cell.className = 'sp-cell'
-        cell.style.height = '100%'
-        if (typeof value === 'string') {
-          cell.textContent = value.replace(/[\t\r\n]+/g, ' ')
-        } else {
-          const lines = value.map((line) => typeof line === 'string' ? line : line.text)
-          lines.forEach((line, index) => {
-            if (index) cell.append(host.ownerDocument.createElement('br'))
-            cell.append(host.ownerDocument.createTextNode(line))
-          })
-        }
-        row.append(cell)
-        ownedCells.push(cell)
-      }
-    }
-    const find = createNativeFind({ scroller, host, rowCount, rowHeight, ...base, ...source, onActiveRow: (row) => {
-      setActiveRow(row)
-      clearTimeout(timer)
-      timer = window.setTimeout(() => setActiveRow(-1), activeRowMs)
-    } })
-    onFind?.(find)
+    const find = createNativeFind({ scroller, host, rowCount, rowHeight, ...base, ...source, onActiveRow })
+    onFindRef.current?.(find)
     return () => {
-      clearTimeout(timer)
       find.destroy()
-      for (const cell of ownedCells) cell.remove()
-      for (const [row, style] of rowStyles) {
-        row.style.display = style.display
-        row.style.gridTemplateColumns = style.gridTemplateColumns
-        row.style.paddingLeft = style.paddingLeft
-        row.style.boxSizing = style.boxSizing
-        row.style.height = style.height
-      }
-      onFind?.(null)
+      onFindRef.current?.(null)
     }
-  }, [scrollerRef, hostRef, rowCount, rowHeight, getRowText, getRowCells, columns, enabled, activeRowMs, onFind,
+  }, [scrollerRef, hostRef, rowCount, rowHeight, getRowText, getRowCells, columns, enabled, onActiveRow,
     base.rowTop, base.charWidth, base.font, base.baseline, base.tabQuantum, base.zIndex, base.rowsPerChunk,
-    base.sparseMaxChunks, base.tabSize, base.indent, materializeRows, materializeKey, getRichRowCells])
+    base.sparseMaxChunks, base.tabSize, base.indent, getRichRowCells])
   return { activeRow }
 }
 

@@ -77,16 +77,12 @@ describe('NativeFindGrid compatibility observer', () => {
     const element = document.createElement('div')
     document.body.append(element)
     const root = createRoot(element)
-    const events: (string | null)[] = []
-    const onFind = (find: NativeFind | null) => events.push(find ? find.mode : null)
     const getRow = () => ['one', 'two']
-    act(() => root.render(<NativeFindGrid rowCount={1} columns={1} getRow={getRow} onFind={onFind} />))
-    const first: { value: NativeFind | null } = { value: null }
-    const readFirst = (find: NativeFind | null) => { first.value = find }
-    act(() => root.render(<NativeFindGrid rowCount={1} columns={1} getRow={getRow} onFind={readFirst} />))
-    expect(first.value?.audit('two')).toMatchObject({ expectedOccurrences: 0, findable: 0, total: 0 })
     const latest: { value: NativeFind | null } = { value: null }
-    act(() => root.render(<NativeFindGrid rowCount={1} columns={2} getRow={getRow} onFind={(find) => { latest.value = find }} />))
+    const track = (find: NativeFind | null) => { latest.value = find }
+    act(() => root.render(<NativeFindGrid rowCount={1} columns={1} getRow={getRow} onFind={track} />))
+    expect(latest.value?.audit('two')).toMatchObject({ expectedOccurrences: 0, findable: 0, total: 0 })
+    act(() => root.render(<NativeFindGrid rowCount={1} columns={2} getRow={getRow} onFind={track} />))
     expect(latest.value?.audit('two')).toMatchObject({ expectedOccurrences: 1, findable: 1, total: 1, corrupt: [] })
     expect(element.querySelectorAll('.sp-cell')).toHaveLength(2)
     act(() => root.unmount())
@@ -209,5 +205,94 @@ describe('NativeFindGrid compatibility observer', () => {
     expect(element.querySelector('.sp-cell')?.textContent).toBe('row 5')
     warn.mockRestore()
     act(() => root.unmount())
+  })
+
+  describe('a row window that moves', () => {
+    type Seen = { activeRow: number }
+    function setup(events: (NativeFind | null)[], seen: Seen) {
+      function Harness({ first }: { first: number }) {
+        const scrollerRef = useRef<HTMLDivElement>(null)
+        const hostRef = useRef<HTMLDivElement>(null)
+        const getRowText = useCallback((row: number) => `row ${row}`, [])
+        const { activeRow } = useFindIndex(scrollerRef, hostRef, {
+          rowCount: 20, rowHeight: 32, getRowText, materializeRows: true, materializeKey: first, activeRowMs: 1000,
+          onFind: (find) => events.push(find),
+        })
+        seen.activeRow = activeRow
+        return (
+          <div ref={scrollerRef}>
+            <div ref={hostRef}>
+              {[0, 1, 2].map((i) => <div className="sp-row" key={first + i} data-row={first + i} />)}
+            </div>
+          </div>
+        )
+      }
+      const element = document.createElement('div')
+      document.body.append(element)
+      const root = createRoot(element)
+      return { element, root, Harness }
+    }
+
+    it('keeps the text node and the selection of a row that stays in view', () => {
+      const events: (NativeFind | null)[] = []
+      const { element, root, Harness } = setup(events, { activeRow: -1 })
+      act(() => root.render(<Harness first={0} />))
+      const cell = element.querySelector('[data-row="1"] .sp-cell') as HTMLElement
+      const text = cell.firstChild as Text
+      const range = document.createRange()
+      range.selectNodeContents(text)
+      document.getSelection()?.removeAllRanges()
+      document.getSelection()?.addRange(range)
+      act(() => root.render(<Harness first={1} />))
+      const after = element.querySelector('[data-row="1"] .sp-cell') as HTMLElement
+      expect(after).toBe(cell)
+      expect(after.firstChild).toBe(text)
+      expect(text.isConnected).toBe(true)
+      expect(document.getSelection()?.toString()).toBe('row 1')
+      // The new row is filled and the row that left leaves no cell behind.
+      expect(element.querySelector('[data-row="3"] .sp-cell')?.textContent).toBe('row 3')
+      expect(element.querySelector('[data-row="0"]')).toBeNull()
+      expect(element.querySelectorAll('.sp-cell')).toHaveLength(3)
+      act(() => root.unmount())
+    })
+
+    it('calls onFind once per real change, not on each window move', () => {
+      const events: (NativeFind | null)[] = []
+      const { root, Harness } = setup(events, { activeRow: -1 })
+      act(() => root.render(<Harness first={0} />))
+      expect(events).toHaveLength(1)
+      expect(events[0]).not.toBeNull()
+      for (const first of [1, 2, 3, 4]) act(() => root.render(<Harness first={first} />))
+      expect(events).toHaveLength(1)
+      act(() => root.unmount())
+      expect(events).toHaveLength(2)
+      expect(events[1]).toBeNull()
+    })
+
+    it('resets activeRow after its timeout, also when the window moves meanwhile', () => {
+      vi.useFakeTimers()
+      try {
+        const seen: Seen = { activeRow: -1 }
+        const { element, root, Harness } = setup([], seen)
+        act(() => root.render(<Harness first={0} />))
+        const text = (element.querySelector('[data-row="1"] .sp-cell') as HTMLElement).firstChild as Text
+        const range = document.createRange()
+        range.selectNodeContents(text)
+        document.getSelection()?.removeAllRanges()
+        document.getSelection()?.addRange(range)
+        act(() => { document.dispatchEvent(new Event('selectionchange')) })
+        expect(seen.activeRow).toBe(1)
+        act(() => { vi.advanceTimersByTime(400) })
+        act(() => root.render(<Harness first={1} />))
+        act(() => { vi.advanceTimersByTime(400) })
+        act(() => root.render(<Harness first={2} />))
+        expect(seen.activeRow).toBe(1)
+        act(() => { vi.advanceTimersByTime(400) })
+        expect(seen.activeRow).toBe(-1)
+        act(() => root.unmount())
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 })
