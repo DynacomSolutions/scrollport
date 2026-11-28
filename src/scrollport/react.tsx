@@ -11,14 +11,19 @@ export type UseFindIndexOptions = Omit<NativeFindBase, 'scroller' | 'host' | 'on
   activeRowMs?: number
   /** Number of source rows in one rendered group. */
   rowsPerChunk?: number
-  /** Materialise text in empty caller rows. The generic hook defaults to observer-only. */
+  /**
+   * Fill empty `.sp-row[data-row]` placeholders in the host with cell text from the source accessor.
+   * Default `false`: the hook only observes text that the caller already renders. `useNativeFind` sets it to `true`.
+   */
   materializeRows?: boolean
+  /** Change this value to fill placeholder rows again, for example when a windowed grid shows other rows. */
+  materializeKey?: string | number
   onFind?: (find: NativeFind | null) => void
 }
 
 /** Observe real text and report the controller lifecycle. */
 export function useFindIndex(scrollerRef: RefObject<HTMLElement>, hostRef: RefObject<HTMLElement>, options: UseFindIndexOptions) {
-  const { rowCount, rowHeight, getRowText, getRowCells, getRichRowCells, columns, enabled = true, activeRowMs = 1500, materializeRows = false, onFind, ...base } = options
+  const { rowCount, rowHeight, getRowText, getRowCells, getRichRowCells, columns, enabled = true, activeRowMs = 1500, materializeRows = false, materializeKey, onFind, ...base } = options
   const tabSize = options.tabSize ?? 120
   const indent = options.indent ?? 8
   const [activeRow, setActiveRow] = useState(-1)
@@ -91,21 +96,63 @@ export function useFindIndex(scrollerRef: RefObject<HTMLElement>, hostRef: RefOb
     }
   }, [scrollerRef, hostRef, rowCount, rowHeight, getRowText, getRowCells, columns, enabled, activeRowMs, onFind,
     base.rowTop, base.charWidth, base.font, base.baseline, base.tabQuantum, base.zIndex, base.rowsPerChunk,
-    base.sparseMaxChunks, base.tabSize, base.indent, materializeRows, getRichRowCells])
+    base.sparseMaxChunks, base.tabSize, base.indent, materializeRows, materializeKey, getRichRowCells])
   return { activeRow }
 }
 
-export type UseNativeFindOptions = Omit<UseFindIndexOptions, 'getRowCells' | 'getRichRowCells' | 'columns' | 'enabled' | 'rowTop' | 'getRowText' | 'materializeRows'> & {
+export type UseNativeFindOptions = Omit<UseFindIndexOptions, 'getRowCells' | 'getRichRowCells' | 'columns' | 'enabled' | 'rowTop' | 'getRowText' | 'materializeRows' | 'materializeKey'> & {
   getRowText: (row: number) => string
+  /**
+   * Render every row (`first` is 0 and `end` is `rowCount`) so that browser Find reaches all of them.
+   * Default `false`: the hook returns a window of rows near the viewport, as before. Find then covers that window only.
+   * With `true` the caller must accept one DOM row for each source row.
+   */
+  renderAllRows?: boolean
 }
 
-/** Provide real host references and report its controller lifecycle. */
+type View = { first: number; end: number }
+
+/**
+ * Provide scroller and host references, the rows to draw, and the row that the browser selected last.
+ * The hook fills each `.sp-row[data-row]` placeholder in the window with real cell text.
+ * Browser Find reaches the rows in the window only, unless `renderAllRows` is `true`.
+ * For a grid of many rows that Find must reach, use `NativeFindGrid`.
+ */
 export function useNativeFind(options: UseNativeFindOptions) {
-  const { rowCount } = options
+  const { rowCount, rowHeight, renderAllRows = false, ...rest } = options
   const scrollerRef = useRef<HTMLDivElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
-  const { activeRow } = useFindIndex(scrollerRef, hostRef, { ...options, materializeRows: true })
-  return { scrollerRef, hostRef, first: 0, end: rowCount, activeRow }
+  const [view, setView] = useState<View>({ first: 0, end: Math.min(rowCount, 40) })
+
+  // The rows in view, plus a few spare rows. The scroller is an external system, so this is an effect.
+  useEffect(() => {
+    const scroller = scrollerRef.current
+    if (renderAllRows || !scroller) return
+    let frame = 0
+    const measure = () => {
+      frame = 0
+      const first = Math.max(0, Math.floor(scroller.scrollTop / rowHeight) - 1)
+      const end = Math.min(rowCount, first + Math.ceil(scroller.clientHeight / rowHeight) + 3)
+      setView((v) => (v.first === first && v.end === end ? v : { first, end }))
+    }
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(measure)
+    }
+    measure()
+    scroller.addEventListener('scroll', schedule, { passive: true })
+    const resize = new ResizeObserver(schedule)
+    resize.observe(scroller)
+    return () => {
+      cancelAnimationFrame(frame)
+      scroller.removeEventListener('scroll', schedule)
+      resize.disconnect()
+    }
+  }, [rowCount, rowHeight, renderAllRows])
+
+  const first = renderAllRows ? 0 : Math.min(view.first, rowCount)
+  const end = renderAllRows ? rowCount : Math.min(view.end, rowCount)
+  const { activeRow } = useFindIndex(scrollerRef, hostRef, { ...rest, rowCount, rowHeight, materializeRows: true, materializeKey: `${first}:${end}` })
+  return { scrollerRef, hostRef, first, end, activeRow }
 }
 
 /** Render one ordinary text occurrence. */

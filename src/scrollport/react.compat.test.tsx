@@ -6,6 +6,7 @@ import type { NativeFind } from './core'
 
 beforeAll(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} unobserve() {} })
 })
 
 afterEach(() => document.body.replaceChildren())
@@ -169,4 +170,44 @@ describe('NativeFindGrid compatibility observer', () => {
     act(() => root.unmount())
   })
 
+  it('useNativeFind returns a window of rows by default, not every row', () => {
+    const element = document.createElement('div')
+    document.body.append(element)
+    const root = createRoot(element)
+    const seen: { first: number; end: number }[] = []
+    function Harness({ all }: { all: boolean }) {
+      const find = useNativeFind({ rowCount: 100_000, rowHeight: 32, getRowText: () => 'x', renderAllRows: all })
+      seen.push({ first: find.first, end: find.end })
+      return <div ref={find.scrollerRef}><div ref={find.hostRef} /></div>
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    act(() => root.render(<Harness all={false} />))
+    expect(seen[seen.length - 1].first).toBe(0)
+    expect(seen[seen.length - 1].end).toBeLessThanOrEqual(40)
+    act(() => root.render(<Harness all={true} />))
+    expect(seen[seen.length - 1]).toEqual({ first: 0, end: 100_000 })
+    warn.mockRestore()
+    act(() => root.unmount())
+  })
+
+  it('fills the placeholders again when the row window changes', () => {
+    const element = document.createElement('div')
+    document.body.append(element)
+    const root = createRoot(element)
+    function Harness({ first }: { first: number }) {
+      const scrollerRef = useRef<HTMLDivElement>(null)
+      const hostRef = useRef<HTMLDivElement>(null)
+      const getRowText = useCallback((row: number) => `row ${row}`, [])
+      useFindIndex(scrollerRef, hostRef, { rowCount: 10, rowHeight: 32, getRowText, materializeRows: true, materializeKey: first })
+      return <div ref={scrollerRef}><div ref={hostRef}><div className="sp-row" key={first} data-row={first} /></div></div>
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    act(() => root.render(<Harness first={2} />))
+    expect(element.querySelector('.sp-cell')?.textContent).toBe('row 2')
+    act(() => root.render(<Harness first={5} />))
+    expect(element.querySelectorAll('.sp-cell')).toHaveLength(1)
+    expect(element.querySelector('.sp-cell')?.textContent).toBe('row 5')
+    warn.mockRestore()
+    act(() => root.unmount())
+  })
 })

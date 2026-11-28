@@ -3,6 +3,8 @@
   --sp-bg: #fff;
   --sp-line: #cfd5de;
   --sp-stripe: #f0f3f8;
+  --sp-active: #ffd966;
+  --sp-accent: #1f5fd0;
   position: relative;
   box-sizing: border-box;
   overflow: auto;
@@ -19,11 +21,32 @@
     --sp-bg: #1b2028;
     --sp-line: #343c49;
     --sp-stripe: #222833;
+    --sp-active: #7a5c00;
+    --sp-accent: #6ea4ff;
   }
 }
 
 .sp-host {
-  display: block;
+  position: relative;
+}
+
+/* Legacy rows for `useNativeFind`: the caller places each row. Real cell text sits inside the row. */
+.sp-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--sp-line);
+}
+
+.sp-row-odd {
+  background: var(--sp-stripe);
+}
+
+.sp-row-active {
+  background: var(--sp-active);
+  outline: 2px solid var(--sp-accent);
+  outline-offset: -2px;
 }
 
 .sp-row-group {
