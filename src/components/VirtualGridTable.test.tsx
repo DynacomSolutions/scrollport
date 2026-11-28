@@ -1,34 +1,34 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import type { ColumnDef, SortingState } from '@tanstack/react-table'
-import { IndexedText } from '../scrollport/react'
-import type { NativeFind } from '../scrollport/core'
-import { VirtualGridTable, type ColumnMeta } from './VirtualGridTable'
+import type { ColumnDef } from '@tanstack/react-table'
+import { VirtualGridTable, type VirtualGridColumn } from './VirtualGridTable'
 
-type Person = { id: number; name: string; city: string; score: number; sub?: Person[] }
+type Person = { id: number; name: string; city: string; score: number }
 
-const people = (n: number, from = 0): Person[] =>
-  Array.from({ length: n }, (_, i) => ({ id: from + i, name: `name${from + i}`, city: i % 2 ? 'Oslo' : 'Riga', score: (i * 7) % 50 }))
-
+const data = (n: number): Person[] => Array.from({ length: n }, (_, i) => ({ id: i, name: `name${i}`, city: i % 2 ? 'Oslo' : 'Riga', score: i * 7 }))
 const columns: ColumnDef<Person>[] = [
-  { accessorKey: 'name', header: 'Name', size: 200, meta: { fixed: true } as ColumnMeta<Person>, cell: ({ row }) => <IndexedText text={row.original.name} /> },
-  {
-    accessorKey: 'score',
-    header: 'Score',
-    size: 100,
-    meta: { numeric: true, findText: (row) => `${row.original.score} pts` } as ColumnMeta<Person>,
-    cell: ({ row }) => <IndexedText text={`${row.original.score} pts`} />,
-  },
-  { accessorKey: 'city', header: 'City', size: 140 }, // no findText: the index uses the plain value
+  { accessorKey: 'name', header: 'Name', size: 200, cell: ({ row }) => <span>{row.original.name}</span> },
+  { accessorKey: 'score', header: 'Score', size: 100, cell: ({ row }) => <span>{row.original.score} pts</span> },
+  { accessorKey: 'city', header: 'City', size: 140 },
 ]
 
-describe('VirtualGridTable with native find', () => {
+describe('VirtualGridTable native Find DOM', () => {
   let root: Root | undefined
   let el: HTMLDivElement
 
   beforeAll(() => {
     ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+    const values = new Map<string, string>()
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => values.set(key, value),
+        removeItem: (key: string) => values.delete(key),
+        clear: () => values.clear(),
+      } satisfies Pick<Storage, 'getItem' | 'setItem' | 'removeItem' | 'clear'>,
+    })
     vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} unobserve() {} })
     vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
   })
@@ -37,6 +37,7 @@ describe('VirtualGridTable with native find', () => {
     act(() => root?.unmount())
     el.remove()
     window.localStorage.clear()
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
   })
 
   const render = (node: React.ReactNode) => {
@@ -45,94 +46,205 @@ describe('VirtualGridTable with native find', () => {
     root = createRoot(el)
     act(() => root!.render(node))
   }
-  const table = (data: Person[], extra: Partial<React.ComponentProps<typeof VirtualGridTable<Person>>> = {}) => (
-    <VirtualGridTable<Person> tableId="t" data={data} columns={columns} displayMode="table" nativeFind {...extra} />
+  const table = (rows: Person[], nativeFind = true, extra: Partial<React.ComponentProps<typeof VirtualGridTable<Person>>> = {}) => (
+    <VirtualGridTable<Person> tableId="t" data={rows} columns={columns} displayMode="table" nativeFind={nativeFind} {...extra} />
   )
-  const lines = (k = 0) => (el.querySelector(`[data-sp-chunk="${k}"]`)!.firstChild as Text).data.split('\n').map((l) => l.split(/\t+/).filter(Boolean))
 
-  it('holds the cell text of every row, in the order of the table, one chunk per 100 rows', () => {
-    render(table(people(250)))
-    expect(el.querySelectorAll('[data-sp-chunk]')).toHaveLength(3)
-    expect(lines(0)[0]).toEqual(['name0', '0 pts', 'Riga'])
-    expect(lines(2)[49]).toEqual(['name249', `${(249 * 7) % 50} pts`, 'Oslo'])
+  it('uses the displayed cell nodes for all rows without a proxy or inert duplicate', () => {
+    render(table(data(250)))
+    expect(el.querySelectorAll('.body-row')).toHaveLength(250)
+    expect(el.querySelectorAll('.native-find-index, [data-find-index], [inert]')).toHaveLength(0)
+    const last = el.querySelector('[data-row="249"] .td')!
+    expect(last.textContent).toBe('name249')
+    expect(last.querySelectorAll('[inert], [hidden], [data-find-index]').length).toBe(0)
+    expect(last.querySelector('.sticky-surface')?.textContent).toBe('name249')
+    expect(last.querySelector('.sticky-surface')?.childNodes[0]?.textContent).toBe('name249')
+    expect(el.querySelectorAll('.td').length).toBe(250 * 3)
   })
 
-  it('puts the first row below the header', () => {
-    render(table(people(10)))
-    expect(el.querySelector<HTMLElement>('[data-sp-chunk]')!.style.top).toBe('46px')
+  it('keeps repeated text as distinct native text occurrences in separate cells', () => {
+    const repeated = [{ id: 1, name: 'matchword', city: 'matchword', score: 1 }]
+    render(table(repeated))
+    const cells = [...el.querySelectorAll('.td')].filter((cell) => cell.textContent === 'matchword')
+    expect(cells).toHaveLength(2)
+    expect(cells[0]).not.toBe(cells[1])
+    expect(cells.every((cell) => cell.querySelectorAll('[inert]').length === 0)).toBe(true)
   })
 
-  it('draws no index when native find is off or in card mode', () => {
-    render(table(people(10), { nativeFind: false }))
-    expect(el.querySelectorAll('[data-sp-chunk]')).toHaveLength(0)
-    act(() => root!.unmount())
-    el.remove()
-    render(table(people(10), { displayMode: 'card' }))
-    expect(el.querySelectorAll('[data-sp-chunk]')).toHaveLength(0)
-  })
-
-  it('builds the index again, in the new order, after a sort', () => {
-    const sorted: SortingState = [{ id: 'score', desc: true }]
-    render(table(people(250), { sorting: [] }))
-    const before = lines(0)[0][0]
-    act(() => root!.render(table(people(250), { sorting: sorted, onSortingChange: () => {} })))
-    expect(lines(0)[0][0]).not.toBe(before)
-    const scores = lines(0).map((l) => Number(l[1].split(' ')[0]))
-    expect(scores).toEqual([...scores].sort((a, b) => b - a))
-  })
-
-  it('builds the index again for a filter or new data', () => {
-    let find: NativeFind | null = null
-    const onFind = (f: NativeFind | null) => (find = f)
-    render(table(people(250), { onFind }))
-    expect(find!.chunkCount).toBe(3)
-    act(() => root!.render(table(people(250).filter((p) => p.city === 'Oslo'), { onFind })))
-    expect(find!.chunkCount).toBe(2) // 125 rows left
-    expect(lines(0).every((l) => l[2] === 'Oslo')).toBe(true)
-    act(() => root!.render(table(people(30, 1000), { onFind })))
-    expect(lines(0)[0][0]).toBe('name1000')
-  })
-
-  it('follows the expanded rows of a tree, with the group row in its place', () => {
-    const tree: Person[] = [{ id: 1, name: 'group', city: '', score: 1, sub: people(150, 10) }]
-    render(
-      table(tree, {
-        getSubRows: (row) => row.sub,
-        defaultExpanded: true,
-        getRowId: (row) => String(row.id) + row.name,
-      }),
+  it('applies the native sticky class only when canSubheaderStick permits it', () => {
+    type Group = { id: string; name: string; children?: Group[] }
+    const groups: Group[] = [
+      { id: 'stick', name: 'Stick group', children: [{ id: 'stick-child', name: 'Child A' }] },
+      { id: 'no-stick', name: 'No stick group', children: [{ id: 'no-stick-child', name: 'Child B' }] },
+    ]
+    const groupColumns: ColumnDef<Group>[] = [{ accessorKey: 'name', header: 'Name' }]
+    const groupTable = (nativeFind: boolean) => (
+      <VirtualGridTable<Group>
+        tableId="sticky-predicate"
+        data={groups}
+        columns={groupColumns}
+        displayMode="table"
+        nativeFind={nativeFind}
+        defaultExpanded={false}
+        getSubRows={(row) => row.children}
+        isSubheaderRow={(row) => row.depth === 0}
+        canSubheaderStick={(row) => row.original.id === 'stick'}
+      />
     )
-    expect(el.querySelectorAll('[data-sp-chunk]')).toHaveLength(2) // 151 rows
-    expect(lines(0)[0][0]).toBe('group')
-    expect(lines(0)[1][0]).toBe('name10')
-    act(() => root!.unmount())
-    el.remove()
-    window.localStorage.clear() // the first table saved its expanded state
-    render(table(tree, { getSubRows: (row) => row.sub, defaultExpanded: false, getRowId: (row) => String(row.id) + row.name }))
-    expect(el.querySelectorAll('[data-sp-chunk]')).toHaveLength(1) // the group row alone
+
+    render(groupTable(true))
+    const nativeRows = [...el.querySelectorAll<HTMLElement>('.body-row.row-department')]
+    expect(nativeRows.map((row) => row.textContent)).toEqual(['Stick group', 'No stick group'])
+    expect(nativeRows.map((row) => row.classList.contains('native-find-sticky-subheader'))).toEqual([true, false])
+    expect(el.querySelectorAll('.department-sticky-overlay')).toHaveLength(0)
+
+    render(groupTable(false))
+    const scroller = el.querySelector<HTMLElement>('.table-wrap')!
+    scroller.scrollTop = 92
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(el.querySelectorAll('.department-sticky-overlay')).toHaveLength(1)
   })
 
-  it('puts the right-aligned column text inside its own cell', () => {
-    render(table(people(5)))
-    // columns: name 200 px (0..200), score 100 px (200..300), city 140 px. Padding is 1.25rem = 20 px.
-    const line = (el.querySelector('[data-sp-chunk="0"]')!.firstChild as Text).data.split('\n')[1]
-    const cw = 7 // the test DOM draws nothing: the core falls back to 7 px per character
-    const starts: number[] = []
-    let pos = 0
-    let inText = false
-    for (const ch of line) {
-      if (ch === '\t') {
-        pos = (Math.floor(pos / 20 + 1e-6) + 1) * 20
-        inText = false
-      } else {
-        if (!inText) starts.push(pos)
-        inText = true
-        pos += cw
-      }
+  it('keeps normal virtual rendering when native Find is off', () => {
+    render(table(data(250), false))
+    expect(el.querySelectorAll('.body-row').length).toBeLessThan(250)
+    expect(el.querySelectorAll('.native-find-index, [data-find-index], [inert]')).toHaveLength(0)
+  })
+
+  it('keeps the complete real-text table in auto mode on a narrow viewport', () => {
+    vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener() {}, removeEventListener() {} }))
+    render(table(data(10), true, { displayMode: 'auto' }))
+    expect(el.querySelector('.table-inner.native-find')).not.toBeNull()
+    expect(el.querySelectorAll('.body-row')).toHaveLength(10)
+    expect(el.querySelector('[data-row="9"] .td')?.textContent).toBe('name9')
+    expect(el.querySelectorAll('.native-find-index, [data-find-index], [inert]')).toHaveLength(0)
+  })
+
+  it('preserves rich displayed cell content and its interaction nodes', () => {
+    const rich: ColumnDef<Person>[] = [
+      { accessorKey: 'name', header: 'Name', cell: () => <a href="/person/1"><strong>First line</strong><span>Second line</span></a> },
+      { accessorKey: 'city', header: 'City', cell: () => <button type="button" onClick={() => {}}>Open</button> },
+    ]
+    render(<VirtualGridTable<Person> tableId="rich" data={data(1)} columns={rich} displayMode="table" nativeFind />)
+    const row = el.querySelector('.body-row')!
+    expect(row.querySelector('a[href="/person/1"]')?.textContent).toBe('First lineSecond line')
+    expect(row.querySelector('button')?.textContent).toBe('Open')
+    expect(row.querySelector('[inert]')).toBeNull()
+  })
+
+  it('uses the pure renderer for native body cells and retains normal cell rendering in card mode', () => {
+    const onOpen = vi.fn()
+    const richColumns: VirtualGridColumn<Person>[] = [
+      {
+        accessorKey: 'name',
+        header: 'Name',
+        renderNativeCell: (row) => <button type="button" onClick={onOpen}>{row.original.name}</button>,
+        cell: ({ getValue }) => <a href="/person">{String(getValue())}</a>,
+      },
+      { accessorKey: 'city', header: 'City', cell: ({ getValue }) => String(getValue()) },
+    ]
+    const people = data(2)
+    const sorted = table(people, true, { columns: richColumns, sorting: [{ id: 'name', desc: true }] })
+    render(sorted)
+    expect([...el.querySelectorAll('.body-row button')].map((button) => button.textContent)).toEqual(['name1', 'name0'])
+    expect([...el.querySelectorAll('.body-row')].map((row) => row.querySelectorAll('.td')[1]?.textContent)).toEqual(['Oslo', 'Riga'])
+    act(() => el.querySelector<HTMLButtonElement>('.body-row button')!.click())
+    expect(onOpen).toHaveBeenCalledTimes(1)
+
+    const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(900)
+    const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(500)
+    try {
+      act(() => root!.render(table(people, true, { columns: richColumns, displayMode: 'card' })))
+      expect(el.querySelector('.card-field-value a')?.textContent).toBe('name0')
+      expect(el.querySelector('.card-field-value button')).toBeNull()
+    } finally {
+      width.mockRestore()
+      height.mockRestore()
     }
-    expect(line.split(/\t+/).filter(Boolean)).toEqual(['name1', '7 pts', 'Oslo'])
-    expect(starts[1]).toBeGreaterThan(200)
-    expect(starts[1] + 5 * cw).toBeLessThanOrEqual(300 + 10) // ends at the right edge of the score cell, within half a tab stop
-    expect(starts[2]).toBeGreaterThanOrEqual(300 + 20 - 10) // the city cell starts after the score cell
+  })
+
+  it('keeps native cell text in sorted order and updates it when data is filtered', () => {
+    const people = data(4)
+    const sorted = table(people, true, { sorting: [{ id: 'name', desc: true }] })
+    render(sorted)
+    const names = [...el.querySelectorAll('.body-row')].map((row) => row.querySelector('.td')?.textContent)
+    expect(names).toEqual(['name3', 'name2', 'name1', 'name0'])
+
+    act(() => root!.render(table(people.filter((person) => person.city === 'Oslo'), true, { sorting: [{ id: 'name', desc: true }] })))
+    expect([...el.querySelectorAll('.body-row')].map((row) => row.querySelector('.td')?.textContent)).toEqual(['name3', 'name1'])
+    expect(el.querySelectorAll('.native-find-index, [data-find-index], [inert]')).toHaveLength(0)
+  })
+
+  describe('render cost of the native Find table', () => {
+    const ROWS = 2000
+    let cellRenders = 0
+    const counted: VirtualGridColumn<Person>[] = [
+      { accessorKey: 'name', header: 'Name', size: 200, renderNativeCell: (row) => { cellRenders++; return <span>{row.original.name}</span> } },
+      { accessorKey: 'city', header: 'City', size: 140, renderNativeCell: (row) => { cellRenders++; return <span>{row.original.city}</span> } },
+    ]
+    const hover = (node: Element, type: 'mouseover' | 'mouseout') =>
+      act(() => { node.dispatchEvent(new MouseEvent(type, { bubbles: true, relatedTarget: null })) })
+
+    it('does not render every row again for a resize-handle hover', () => {
+      cellRenders = 0
+      render(table(data(ROWS), true, { columns: counted }))
+      expect(el.querySelectorAll('.body-row')).toHaveLength(ROWS)
+      expect(cellRenders).toBe(ROWS * 2)
+      cellRenders = 0
+      const handle = el.querySelector('.resize-handle')!
+      hover(handle, 'mouseover')
+      expect(el.querySelector('style')?.textContent).toContain('data-col="name"')
+      hover(handle, 'mouseout')
+      expect(cellRenders).toBeLessThan(20)
+    })
+
+    it('marks the hovered column with one style rule and leaves cell classes alone', () => {
+      render(table(data(5), true, { columns: counted }))
+      const before = [...el.querySelectorAll('.td, .th')].map((node) => node.className).join('|')
+      hover(el.querySelector('.resize-handle')!, 'mouseover')
+      expect([...el.querySelectorAll('.td, .th')].map((node) => node.className).join('|')).toBe(before)
+      expect(el.querySelectorAll('.col-resize-highlight')).toHaveLength(0)
+      expect(el.querySelectorAll('style')).toHaveLength(1)
+    })
+
+    it('scopes the highlight rule to header and body cells, not to data-col inside cell content', () => {
+      render(table(data(5), true, { columns: counted }))
+      hover(el.querySelector('.resize-handle')!, 'mouseover')
+      const rule = el.querySelector('style')?.textContent ?? ''
+      expect(rule).toContain(':is(.th, .td)[data-col="name"]')
+      const inner = document.createElement('span')
+      inner.dataset.col = 'name'
+      el.querySelector('.td')!.append(inner)
+      const selector = rule.slice(0, rule.indexOf('{')).trim()
+      expect(el.querySelectorAll(selector).length).toBeGreaterThan(0)
+      expect([...el.querySelectorAll(selector)]).not.toContain(inner)
+    })
+
+    it('does not render every row again for a sort-handle hover', () => {
+      cellRenders = 0
+      render(table(data(ROWS), true, { columns: counted }))
+      cellRenders = 0
+      hover(el.querySelector('.header-sort-button')!, 'mouseover')
+      expect(cellRenders).toBeLessThan(20)
+    })
+  })
+
+  it('sets the header and sticky offsets from the row height and the header groups', () => {
+    render(table(data(3), true, { rowHeight: 36 }))
+    const inner = el.querySelector<HTMLElement>('.table-inner')!
+    expect(inner.style.getPropertyValue('--vgt-row-height')).toBe('36px')
+    expect(inner.style.getPropertyValue('--vgt-header-height')).toBe('36px')
+  })
+
+  it('shows the scrolled header state in native Find mode', () => {
+    render(table(data(20)))
+    const scroller = el.querySelector<HTMLElement>('.table-wrap')!
+    expect(el.querySelector('.header-row')!.classList.contains('is-vertically-sticky')).toBe(false)
+    scroller.scrollTop = 120
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(el.querySelector('.header-row')!.classList.contains('is-vertically-sticky')).toBe(true)
+    scroller.scrollTop = 0
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(el.querySelector('.header-row')!.classList.contains('is-vertically-sticky')).toBe(false)
   })
 })

@@ -30,7 +30,7 @@
   position: relative;
 }
 
-/* The rows draw only a background. All text sits in the index chunks, which lie over the rows. */
+/* Legacy rows for `useNativeFind`: the caller places each row. Real cell text sits inside the row. */
 .sp-row {
   position: absolute;
   left: 0;
@@ -49,20 +49,33 @@
   outline-offset: -2px;
 }
 
+.sp-row-group {
+  align-content: start;
+  content-visibility: auto;
+}
+
 /*
- * A match in the transparent index: show its characters over the real cell. A page that styles ::search-text replaces
- * the browser colours, so the colours are set here (the Chrome colours: yellow, and orange for the current match).
+ * An inline content-visibility would override this rule of the browser for hidden="until-found". Keep the value in the
+ * style sheet, so the hidden group stays findable and the browser fires beforematch when it reveals the group.
  */
-[data-sp-layer='transparent']::search-text {
-  color: var(--sp-fg, #14181f);
-  background-color: #ffff00;
+.sp-row-group[hidden='until-found'] {
+  content-visibility: hidden;
 }
 
-[data-sp-layer='transparent']::search-text:current {
-  color: var(--sp-fg, #14181f);
-  background-color: #ff9632;
+.sp-cell {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--sp-line);
+  overflow: hidden;
+  padding: 0 8px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--sp-fg);
+  user-select: text;
 }
 
-[data-sp-layer='transparent']::selection {
-  color: var(--sp-fg, #14181f);
+.sp-cell-odd {
+  background: var(--sp-stripe);
 }

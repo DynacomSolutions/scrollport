@@ -1,6 +1,6 @@
 import './styles.css'
-import { useCallback, useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
-import type { ColumnDef, Row, SortingState } from '@tanstack/react-table'
+import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
+import type { Row, SortingState } from '@tanstack/react-table'
 import { generateData, type UserRecord } from './data'
 import {
   OmniSearchBar,
@@ -9,42 +9,15 @@ import {
   type OmniSearchPill,
   type OmniSearchState,
 } from './components/OmniSearchBar'
-import { VirtualGridTable, type ColumnMeta, type TableDisplayMode } from './components/VirtualGridTable'
-import type { NativeFind } from './scrollport/core'
-import { IndexedText } from './scrollport/react'
-import { publishFindTest } from './demo/findTest'
+import { VirtualGridTable, type ColumnMeta, type TableDisplayMode, type VirtualGridColumn } from './components/VirtualGridTable'
+import { CellText } from './scrollport/react'
+import type { NativeFind, NativeFindCell } from './scrollport/core'
 
-type TableRow = {
-  id: string
-  recordId: number
-  rowType: 'department' | 'user'
-  department: string
-  username: string
-  avatarUrl: string
-  fullName: string
-  email: string
-  role: string
-  country: string
-  city: string
-  status: UserRecord['status']
-  plan: UserRecord['plan']
-  signupDate: string
-  lastLoginAt: string
-  website: string
-  profileUrl: string
-  company: string
-  orders: number
-  sessions: number
-  conversionRate: number
-  revenue: number
-  balance: number
-  mrr: number
-  arr: number
-  expense: number
-  score: number
-  ticketsOpen: number
-  renewalDate: string
-  userCount: number
+type TableRow = Omit<UserRecord, 'id'> & {
+  id: number | string
+  recordId?: number
+  rowType?: 'department' | 'user'
+  userCount?: number
   subRows?: TableRow[]
 }
 
@@ -92,6 +65,7 @@ const dateTimeFormatter = new Intl.DateTimeFormat('en-US', {
   minute: '2-digit',
 })
 const integerFormatter = new Intl.NumberFormat('en-US')
+const usernameCollator = new Intl.Collator()
 
 // Dates repeat a lot (a day, a minute), and the find index formats every row, so the formatted text is kept.
 const dateCache = new Map<string, string>()
@@ -119,7 +93,7 @@ function hostOf(url: string) {
   return new URL(url).host
 }
 
-/** Rows of the demo. The table draws only the rows in view, and the find bar reaches all of them. */
+/** Rows of the demo. Native Find renders each row's displayed text in the table. */
 // `?rows=N` shrinks the demo (tests and tools): the cost of native find grows with the number of rows.
 export const DEMO_ROWS = Math.min(100_000, Math.max(100, Number(new URLSearchParams(window.location.search).get('rows')) || 100_000))
 
@@ -150,12 +124,16 @@ function includesInsensitive(value: string, query: string): boolean {
   return value.toLowerCase().includes(query.toLowerCase())
 }
 
+/** The two-line user cell: an avatar, then a handle above a name. */
+const USER_CELL = { avatar: 22, gapRem: 0.55, primaryLine: 18, secondaryLine: 14 }
+
 function highlightText(text: string, query: string): ReactNode {
   const source = text ?? ''
   const needle = query.trim()
   if (!needle) {
-    return <IndexedText text={source} />
+    return source
   }
+
   const lowerSource = source.toLowerCase()
   const lowerNeedle = needle.toLowerCase()
   const parts: ReactNode[] = []
@@ -164,19 +142,21 @@ function highlightText(text: string, query: string): ReactNode {
 
   while (matchIndex !== -1) {
     if (matchIndex > cursor) {
-      parts.push(<IndexedText key={`t${cursor}`} text={source.slice(cursor, matchIndex)} />)
+      parts.push(source.slice(cursor, matchIndex))
     }
     const end = matchIndex + lowerNeedle.length
-    parts.push(<IndexedText key={`${matchIndex}-${end}`} as="mark" className="cell-highlight" text={source.slice(matchIndex, end)} />)
+    parts.push(<mark key={`${matchIndex}-${end}`} className="cell-highlight">{source.slice(matchIndex, end)}</mark>)
     cursor = end
     matchIndex = lowerSource.indexOf(lowerNeedle, cursor)
   }
 
   if (cursor < source.length) {
-    parts.push(<IndexedText key={`t${cursor}`} text={source.slice(cursor)} />)
+    parts.push(source.slice(cursor))
   }
 
-  return parts.length > 0 ? parts : <IndexedText text={source} />
+  // One inline wrapper keeps the text and the marks in one inline formatting context. Without it, a flex parent
+  // makes every piece its own flex item, and native Find cannot match text across the pieces.
+  return parts.length > 0 ? <span className="cell-text">{parts}</span> : source
 }
 
 function uniqueSorted(values: string[]): string[] {
@@ -372,7 +352,7 @@ function writeSearchStateToUrl(tableId: string, state: OmniSearchState, sorting:
   }
 }
 
-function toTableRows(records: UserRecord[]): TableRow[] {
+export function toTableRows(records: UserRecord[]): TableRow[] {
   const grouped = new Map<string, UserRecord[]>()
   for (const record of records) {
     const bucket = grouped.get(record.department)
@@ -393,15 +373,8 @@ function toTableRows(records: UserRecord[]): TableRow[] {
       const totalArr = users.reduce((acc, row) => acc + row.arr, 0)
       const totalExpense = users.reduce((acc, row) => acc + row.expense, 0)
 
-      const subRows: TableRow[] = users
-        .sort((a, b) => a.username.localeCompare(b.username))
-        .map((user) => ({
-          ...user,
-          id: `user-${user.id}`,
-          recordId: user.id,
-          rowType: 'user',
-          userCount: 1,
-        }))
+      // Keep each generated record as a table row. Avoid a wrapper object for every user.
+      const subRows: TableRow[] = users.sort((left, right) => usernameCollator.compare(left.username, right.username))
 
       return {
         id: `department-${department.toLowerCase()}`,
@@ -439,7 +412,13 @@ function toTableRows(records: UserRecord[]): TableRow[] {
     })
 }
 
-function App() {
+export function recordIdValue(row: Pick<TableRow, 'id' | 'rowType'>): number | undefined {
+  return row.rowType === 'department' || typeof row.id !== 'number' ? undefined : row.id
+}
+
+export type NativeFindTableDemoProps = { rowCount?: number; nativeFind?: boolean; tableDisplayMode?: TableDisplayMode; onFind?: (find: NativeFind | null) => void }
+
+export function NativeFindTableDemo({ rowCount = DEMO_ROWS, nativeFind = true, tableDisplayMode, onFind }: NativeFindTableDemoProps = {}) {
   const initialSearchState = useMemo(() => parseSearchStateFromUrl(TABLE_ID), [])
   const initialSortingState = useMemo(() => parseSortingStateFromUrl(TABLE_ID), [])
   const initialAutoScrollX = useMemo(() => {
@@ -450,8 +429,8 @@ function App() {
   const [searchState, setSearchState] = useState<OmniSearchState>(initialSearchState)
   const [sorting, setSorting] = useState<SortingState>(initialSortingState)
   const [autoScrollX, setAutoScrollX] = useState<'left' | 'right' | 'off'>(initialAutoScrollX)
-  const [displayMode, setDisplayMode] = useState<TableDisplayMode>(initialDisplayMode)
-  const baseData = useMemo(() => generateData(DEMO_ROWS), [])
+  const [displayMode, setDisplayMode] = useState<TableDisplayMode>(tableDisplayMode ?? initialDisplayMode)
+  const baseData = useMemo(() => generateData(rowCount), [rowCount])
   const rawSearchPill = searchState.pills.find((pill) => pill.columnId === RAW_SEARCH_PILL_ID)
   const rawQuery = rawSearchPill?.value.trim() ?? (searchState.pills.length === 0 ? searchState.globalQuery.trim() : '')
   // Kept between renders: a new array each time would filter all rows again (and build the find index again) on every render.
@@ -544,8 +523,8 @@ function App() {
     () =>
       hasActiveSearch
         ? data
-            .filter((row) => row.rowType === 'department' && row.userCount > 0 && departmentIdsWithSubrowMatch.has(row.id))
-            .map((row) => row.id)
+            .filter((row) => row.rowType === 'department' && (row.userCount ?? 0) > 0 && departmentIdsWithSubrowMatch.has(String(row.id)))
+            .map((row) => String(row.id))
         : [],
     [data, departmentIdsWithSubrowMatch, hasActiveSearch],
   )
@@ -599,19 +578,21 @@ function App() {
     return byKey
   }, [numericPrecision])
 
-  // One entry per column. `text` is the text that the cell shows: the cell draws it with IndexedText, and the native find
-  // index holds the same text (`meta.findText`). Both read `text`, so they cannot differ.
-  const columns = useMemo<ColumnDef<TableRow>[]>(() => {
+  // One entry per column. The cell renderer controls its real searchable text and formatting.
+  const columns = useMemo<VirtualGridColumn<TableRow>[]>(() => {
     type Spec = {
       key: keyof TableRow & string
       header: string
       size: number
       minSize: number
       meta?: Partial<ColumnMeta<TableRow>>
+      accessorFn?: (row: TableRow) => unknown
       text: (row: TableRow) => string
       cell?: (row: Row<TableRow>, text: string) => ReactNode
+      findText?: (row: TableRow) => string
+      findCellText?: (row: TableRow) => NativeFindCell
     }
-    const summary = (label: string) => <IndexedText className="summary-label" text={label} />
+    const summary = (label: string) => <CellText className="summary-label" text={label} />
     const num = (key: NumericColumnKey) => (row: TableRow) => numberFormatters[key].format(Number(row[key]))
     const money = (key: (typeof CURRENCY_COLUMNS)[number]) => (row: TableRow) => currencyFormatters[key].format(Number(row[key]))
     const isGroup = (row: Row<TableRow>) => row.original.rowType === 'department'
@@ -623,12 +604,14 @@ function App() {
         minSize: 220,
         meta: { fixed: true, minPx: 220, sticky: true },
         text: (row) => (row.rowType === 'department' ? `${row.department} ${row.userCount} users` : row.department),
+        findText: (row) => row.rowType === 'department' ? `▸${row.department}${row.userCount} users` : row.department,
+        // the text of a sub row starts after an indent, the text of a group row after the chevron
         cell: (row) =>
           isGroup(row) ? (
             <button className="group-toggle" type="button" onClick={row.getToggleExpandedHandler()}>
               <span className={`chevron${row.getIsExpanded() ? ' is-open' : ''}`}>▸</span>
               <strong>{highlightText(row.original.department, rawQuery)}</strong>
-              <IndexedText className="group-count" text={`${row.original.userCount} users`} />
+              <CellText className="group-count" text={`${row.original.userCount} users`} />
             </button>
           ) : (
             <span className="subrow-indent">{highlightText(row.original.department, rawQuery)}</span>
@@ -640,8 +623,9 @@ function App() {
         size: 90,
         minSize: 70,
         meta: { fixed: true, numeric: true, minPx: 70 },
-        text: (row) => (row.rowType === 'department' ? '-' : numberFormatters.recordId.format(row.recordId)),
-        cell: (row, text) => (isGroup(row) ? <IndexedText text="-" /> : highlightText(text, rawQuery)),
+        accessorFn: recordIdValue,
+        text: (row) => (row.rowType === 'department' ? '-' : numberFormatters.recordId.format(Number(row.id))),
+        cell: (row, text) => (isGroup(row) ? <CellText text="-" /> : highlightText(text, rawQuery)),
       },
       {
         key: 'username',
@@ -650,20 +634,25 @@ function App() {
         minSize: 220,
         meta: { fixed: true, minPx: 220, sticky: true },
         text: (row) => (row.rowType === 'department' ? 'Department Summary' : `@${row.username} ${row.fullName}`),
+        findCellText: (row) => row.rowType === 'department' ? 'Department Summary' : [`@${row.username}`, row.fullName],
         cell: (row) =>
           isGroup(row) ? (
             summary('Department Summary')
           ) : (
-            <div className="user-cell">
-              <img src={row.original.avatarUrl} alt="" loading="lazy" />
+            <div className="user-cell" style={{ gap: `${USER_CELL.gapRem}rem` }}>
+              <img src={row.original.avatarUrl} alt="" loading="lazy" style={{ width: USER_CELL.avatar, height: USER_CELL.avatar }} />
               <div>
-                <div className="user-primary">{highlightText(`@${row.original.username}`, rawQuery)}</div>
-                <div className="user-secondary">{highlightText(row.original.fullName, rawQuery)}</div>
+                <div className="user-primary" style={{ lineHeight: `${USER_CELL.primaryLine}px` }}>
+                  {highlightText(`@${row.original.username}`, rawQuery)}
+                </div>
+                <div className="user-secondary" style={{ lineHeight: `${USER_CELL.secondaryLine}px` }}>
+                  {highlightText(row.original.fullName, rawQuery)}
+                </div>
               </div>
             </div>
           ),
       },
-      { key: 'email', header: 'Email', size: 240, minSize: 220, meta: { minPx: 220 }, text: (row) => row.email },
+      { key: 'email', header: 'Email', size: 300, minSize: 220, meta: { minPx: 220 }, text: (row) => row.email },
       { key: 'role', header: 'Role', size: 190, minSize: 180, meta: { minPx: 180 }, text: (row) => row.role },
       { key: 'country', header: 'Country', size: 170, minSize: 160, meta: { minPx: 160 }, text: (row) => row.country },
       { key: 'city', header: 'City', size: 140, minSize: 130, meta: { minPx: 130 }, text: (row) => row.city },
@@ -766,14 +755,26 @@ function App() {
         text: (row) => formatDate(row.renewalDate),
       },
     ]
-    return specs.map<ColumnDef<TableRow>>((spec) => ({
-      accessorKey: spec.key,
-      header: spec.header,
-      minSize: spec.minSize,
-      size: spec.size,
-      meta: { ...spec.meta, findText: (row: Row<TableRow>) => spec.text(row.original) } satisfies ColumnMeta<TableRow>,
-      cell: ({ row }) => (spec.cell ? spec.cell(row, spec.text(row.original)) : highlightText(spec.text(row.original), rawQuery)),
-    }))
+    return specs.map<VirtualGridColumn<TableRow>>((spec) => {
+      const { accessorFn, ...column } = spec
+      const renderNativeCell = (row: Row<TableRow>) => {
+        const text = column.text(row.original)
+        return column.cell ? column.cell(row, text) : highlightText(text, rawQuery)
+      }
+      return {
+        ...(accessorFn ? { accessorFn, id: spec.key } : { accessorKey: spec.key }),
+        header: column.header,
+        minSize: column.minSize,
+        size: column.size,
+        meta: {
+          ...column.meta,
+          findText: (row: Row<TableRow>) => column.findText?.(row.original) ?? column.text(row.original),
+          findCellText: (row: Row<TableRow>) => column.findCellText?.(row.original) ?? column.findText?.(row.original) ?? column.text(row.original),
+        } satisfies ColumnMeta<TableRow>,
+        cell: ({ row }) => renderNativeCell(row),
+        renderNativeCell,
+      }
+    })
   }, [currencyFormatters, numberFormatters, rawQuery])
 
   useEffect(() => {
@@ -787,8 +788,6 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(`table.${TABLE_ID}.xScroll`, autoScrollX)
   }, [autoScrollX])
-
-  const onFind = useCallback((find: NativeFind | null) => publishFindTest(find, data.reduce((n, row) => n + 1 + (row.subRows?.length ?? 0), 0)), [data])
 
   const displayModeIcon = displayMode === 'table' ? '▦' : displayMode === 'card' ? '▤' : '◌'
   const xScrollIcon = autoScrollX === 'left' ? '⬅' : autoScrollX === 'right' ? '➡' : '↔'
@@ -854,14 +853,14 @@ function App() {
             sorting={sorting}
             onSortingChange={setSorting}
             autoScrollX={autoScrollX}
-            getRowId={(row) => row.id}
+            getRowId={(row) => (row.rowType === 'department' ? String(row.id) : `user-${row.id}`)}
             getSubRows={(row) => row.subRows}
             isSubheaderRow={(row) => row.original.rowType === 'department'}
             canSubheaderStick={(row) => row.original.rowType === 'department' && row.getIsExpanded()}
             autoExpandedRowIds={autoExpandedRowIds}
-            nativeFind
-            defaultExpanded
+            nativeFind={nativeFind}
             onFind={onFind}
+            defaultExpanded
           />
         </div>
       </section>
@@ -869,4 +868,4 @@ function App() {
   )
 }
 
-export default App
+export default NativeFindTableDemo
