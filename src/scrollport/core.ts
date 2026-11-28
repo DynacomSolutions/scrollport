@@ -583,13 +583,16 @@ function actualRow(cell: HTMLElement): number | null {
   return Number.isInteger(value) && value >= 0 ? value : null
 }
 
+// Bundlers replace these literal expressions: `import.meta.env.DEV` (Vite) and `process.env.NODE_ENV` (Webpack, esbuild, Rollup).
+// In a production build the check is then constant, so the bundler removes the warning text.
+// The literal form must stay: a cast or an alias of `import.meta` blocks the replacement.
+declare const process: { env: { NODE_ENV?: string } } | undefined
+
 /** True in development builds. Production builds stay silent. */
-function isDevelopment(): boolean {
-  const meta = (import.meta as unknown as { env?: { DEV?: boolean } }).env
-  if (meta?.DEV !== undefined) return meta.DEV
-  const nodeEnv = (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process?.env?.NODE_ENV
-  return nodeEnv !== undefined && nodeEnv !== 'production'
-}
+const isDevelopment: boolean =
+  // @ts-ignore The Vite client types are not present in every project that uses this file.
+  (typeof import.meta.env !== 'undefined' && import.meta.env.DEV === true) ||
+  (typeof process !== 'undefined' && process.env.NODE_ENV !== 'production')
 
 const warnedHosts = new WeakSet<HTMLElement>()
 
@@ -620,7 +623,7 @@ export function createNativeFind(options: NativeFindImplementationOptions): Nati
     return value.split('\t').map(cleanCell)
   }
   const buildMs = now() - started
-  if (isDevelopment() && rowCount > 0 && !warnedHosts.has(host)) {
+  if (isDevelopment && rowCount > 0 && !warnedHosts.has(host)) {
     const rendered = renderedRowCount(host)
     if (rendered < rowCount) {
       warnedHosts.add(host)
