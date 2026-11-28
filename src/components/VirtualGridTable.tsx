@@ -632,7 +632,8 @@ export function VirtualGridTable<TData extends object>({
     <div className="table-wrap" ref={tableContainerRef} data-vgt={instanceId}>
       {highlightedResizeColumnId ? (
         // One rule for the whole table: a hover or resize does not touch the class of any cell.
-        <style>{`[data-vgt="${cssString(instanceId)}"] [data-col="${cssString(highlightedResizeColumnId)}"] { box-shadow: inset -2px 0 0 #2f60d8; }`}</style>
+        // Only the table's own header and body cells match, not an element with a data-col attribute inside a cell.
+        <style>{`[data-vgt="${cssString(instanceId)}"] :is(.th, .td)[data-col="${cssString(highlightedResizeColumnId)}"] { box-shadow: inset -2px 0 0 #2f60d8; }`}</style>
       ) : null}
       <div
         className={`table-inner${findEnabled ? ' native-find' : ''}`}

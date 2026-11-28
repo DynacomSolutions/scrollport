@@ -207,6 +207,19 @@ describe('VirtualGridTable native Find DOM', () => {
       expect(el.querySelectorAll('style')).toHaveLength(1)
     })
 
+    it('scopes the highlight rule to header and body cells, not to data-col inside cell content', () => {
+      render(table(data(5), true, { columns: counted }))
+      hover(el.querySelector('.resize-handle')!, 'mouseover')
+      const rule = el.querySelector('style')?.textContent ?? ''
+      expect(rule).toContain(':is(.th, .td)[data-col="name"]')
+      const inner = document.createElement('span')
+      inner.dataset.col = 'name'
+      el.querySelector('.td')!.append(inner)
+      const selector = rule.slice(0, rule.indexOf('{')).trim()
+      expect(el.querySelectorAll(selector).length).toBeGreaterThan(0)
+      expect([...el.querySelectorAll(selector)]).not.toContain(inner)
+    })
+
     it('does not render every row again for a sort-handle hover', () => {
       cellRenders = 0
       render(table(data(ROWS), true, { columns: counted }))
