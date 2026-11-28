@@ -6,11 +6,13 @@ The project has a React grid demo and a TanStack table demo. Run `npm ci`, then 
 
 ## Native Find rendering
 
-`NativeFindGrid` places the real cell elements directly in groups of up to 250 rows. Each populated cell contains one text node. The grid reveals groups near the viewport and uses `hidden="until-found"` and `content-visibility: auto` for off-screen groups. The 100,000-row demo has 400 groups and 600,000 cells.
+`NativeFindGrid` places the real cell elements directly in groups of up to 250 rows. Each populated cell contains one text node. The grid reveals groups near the viewport. Off-screen groups use `hidden="until-found"`, which the browser treats as `content-visibility: hidden`. Groups that are shown use `content-visibility: auto`. The 100,000-row demo has 400 groups and 600,000 cells.
 
 With `nativeFind` enabled in table mode, `VirtualGridTable` renders the current row model and all visible columns. Filters and collapsed groups limit which rows enter that model. The table applies `content-visibility: auto` to individual rows. Find uses the text from the real cell renderers, including links and formatted text. The browser results are in "Limits and evidence".
 
-Each row is a memoised component. A hover on a column handle, a sort hover or a column resize does not render the cells of every row again. The column highlight is one style rule for the whole table. In this mode a column resize applies when the user releases the handle.
+Each row is a memoised component. A hover on a column handle, a sort hover or a resize drag does not render the cells of every row again. The column highlight is one style rule for the whole table. In this mode a column resize applies when the user releases the handle. The release changes the column widths, so it renders every row once. During the drag the column keeps its old width.
+
+A memoised row renders again only when its row data, the columns or its row state change. A cell renderer must therefore not read state from outside, such as a ref, a module variable or `table.options.meta`. When such state changes, create the `columns` array again.
 
 The table sets `--vgt-row-height` and `--vgt-header-height` on `.table-inner`. The height of a row and the offset of a sticky department row come from these values and from the `rowHeight` prop.
 
@@ -94,7 +96,8 @@ The `core` helpers remain available for pure text and layout calculations. The `
 - Before: it built the index for all rows.
 - Now: it observes the cells that the caller renders. It does not add text to the page.
 - The new option `materializeRows` (default `false`) fills empty `.sp-row[data-row]` placeholders from the source accessor. The row must have the class `sp-row` and a `data-row` attribute.
-- The new option `materializeKey` fills the placeholders again when its value changes. Use it when the grid shows other rows after a scroll.
+- The new option `materializeKey` fills the placeholders of new rows when its value changes. Rows that stay keep their cells, so a selection survives a scroll. A change of the source accessor or of the row count fills all rows again.
+- `onFind` runs when the observer starts or stops. A change of `materializeKey` does not run it, and the hook uses the newest `onFind` function.
 - `useFindIndex` writes the same development warning as `createNativeFind`.
 
 ### `useNativeFind`
