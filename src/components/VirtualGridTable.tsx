@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   flexRender,
   getCoreRowModel,
@@ -6,6 +6,7 @@ import {
   getSortedRowModel,
   useReactTable,
   type Cell,
+  type Column,
   type ColumnDef,
   type ColumnSizingState,
   type ExpandedState,
@@ -37,6 +38,106 @@ export type VirtualGridColumn<TData extends object> = ColumnDef<TData> & {
   /** A pure function that returns the displayed cell content for native Find. */
   renderNativeCell?: (row: Row<TData>) => ReactNode
 }
+
+/** One rendered column of the table: everything a row needs, so that a row can be memoised. */
+type CellSpec<TData extends object> = {
+  index: number
+  /** An empty track of the width of the skipped columns comes before this cell. */
+  gap: boolean
+  column: Column<TData, unknown>
+  /** Class suffix for numeric, sticky and shadow state. */
+  className: string
+  style: CSSProperties
+  renderNativeCell?: (row: Row<TData>) => ReactNode
+}
+
+type RowLayout<TData extends object> = {
+  gridTemplateColumns: string
+  cells: CellSpec<TData>[]
+}
+
+type BodyRowProps<TData extends object> = {
+  row: Row<TData>
+  rowIndex: number
+  isLast: boolean
+  isSubheader: boolean
+  nativeStickySubheader: boolean
+  underOverlay: boolean
+  /** Not read in the render. A change of the expanded state must render a memoised group row again. */
+  isExpanded: boolean
+  findEnabled: boolean
+  rowHeight: number
+  layout: RowLayout<TData>
+}
+
+function BodyRowImpl<TData extends object>({
+  row,
+  rowIndex,
+  isLast,
+  isSubheader,
+  nativeStickySubheader,
+  underOverlay,
+  findEnabled,
+  rowHeight,
+  layout,
+}: BodyRowProps<TData>) {
+  let cellsByColumnId: Map<string, Cell<TData, unknown>> | undefined
+  return (
+    <div
+      data-row={rowIndex}
+      className={`grid-row body-row${isSubheader ? ' row-department' : ' row-user'}${
+        nativeStickySubheader ? ' native-find-sticky-subheader' : ''
+      }${underOverlay ? ' source-under-sticky-overlay' : ''}${isLast ? ' is-last-row' : ''}`}
+      style={{
+        gridTemplateColumns: layout.gridTemplateColumns,
+        ...(findEnabled ? { contentVisibility: 'auto', containIntrinsicSize: `${rowHeight}px` } : {}),
+      }}
+    >
+      <div className="edge-col edge-start sticky-edge sticky-edge-start" aria-hidden="true" />
+      <div aria-hidden="true" />
+
+      {layout.cells.flatMap((spec) => {
+        const { column, renderNativeCell } = spec
+        if (!renderNativeCell) {
+          cellsByColumnId ??= new Map(row.getVisibleCells().map((cell) => [cell.column.id, cell]))
+        }
+        const cell = renderNativeCell ? undefined : cellsByColumnId?.get(column.id)
+        const gap = spec.gap ? [<div key={`gap-${spec.index}`} aria-hidden="true" />] : []
+
+        if (!cell && !renderNativeCell) {
+          return [
+            ...gap,
+            <div
+              key={`missing-${row.id}-${column.id}`}
+              className={`td${spec.className}`}
+              data-col={column.id}
+              style={spec.style}
+              aria-hidden="true"
+            />,
+          ]
+        }
+
+        return [
+          ...gap,
+          <div key={cell?.id ?? `${row.id}_${column.id}`} className={`td${spec.className}`} data-col={column.id} style={spec.style}>
+            <span className="sticky-surface">
+              {renderNativeCell ? renderNativeCell(row) : cell && flexRender(cell.column.columnDef.cell, cell.getContext())}
+            </span>
+          </div>,
+        ]
+      })}
+
+      <div aria-hidden="true" />
+      <div className="edge-col edge-end sticky-edge sticky-edge-end" aria-hidden="true" />
+    </div>
+  )
+}
+
+/** A table row that renders again only when its own props change. Hover and resize state of the table do not reach it. */
+const BodyRow = memo(BodyRowImpl) as typeof BodyRowImpl
+
+/** Escape a value for a double-quoted CSS string. */
+const cssString = (value: string): string => value.replace(/[\\"]/g, '\\$&').replace(/\n/g, '\\a ')
 
 type VirtualGridTableProps<TData extends object> = {
   tableId: string
@@ -86,6 +187,7 @@ export function VirtualGridTable<TData extends object>({
   onFind,
   defaultExpanded = false,
 }: VirtualGridTableProps<TData>) {
+  const instanceId = useId()
   const effectiveStorageKey = storageKey ?? `table.${tableId}.column-sizing`
   const expandedStorageKey = `table.${tableId}.expanded`
   const [expanded, setExpanded] = useState<ExpandedState>(() => {
@@ -160,7 +262,8 @@ export function VirtualGridTable<TData extends object>({
     enableColumnResizing: true,
     enableSorting: true,
     enableMultiSort: true,
-    columnResizeMode: 'onChange',
+    // Native Find renders every row. A drag would resize all of them on each pointer move, so it applies at the end.
+    columnResizeMode: isNativeFindTable ? 'onEnd' : 'onChange',
     defaultColumn: {
       minSize: 90,
       size: 140,
@@ -220,7 +323,12 @@ export function VirtualGridTable<TData extends object>({
     }
 
     const onScroll = () => {
-      if (isNativeFindTable) return
+      if (isNativeFindTable) {
+        // Native Find mode needs only "scrolled or not" for the header shadow. The state changes at the edge only.
+        setScrollLeft(0)
+        setScrollTop(scrollEl.scrollTop > 0 ? 1 : 0)
+        return
+      }
       setScrollLeft(scrollEl.scrollLeft)
       setScrollTop(scrollEl.scrollTop)
     }
@@ -314,7 +422,8 @@ export function VirtualGridTable<TData extends object>({
     ? visibleColumns.map((column) => (column.columnDef as VirtualGridColumn<TData>).renderNativeCell)
     : []
   const virtualRows = rowVirtualizer.getVirtualItems()
-  const rowIndices = findEnabled ? rows.map((_, index) => index) : virtualRows.map((item) => item.index)
+  const findRowIndices = useMemo(() => (findEnabled ? rows.map((_, index) => index) : []), [findEnabled, rows])
+  const rowIndices = findEnabled ? findRowIndices : virtualRows.map((item) => item.index)
 
   const stickyIndices = visibleColumns
     .map((column, index) => ({ column, index }))
@@ -334,12 +443,17 @@ export function VirtualGridTable<TData extends object>({
   )
   const lastLeftStickyIndex = findEnabled ? (stickyIndices[stickyIndices.length - 1] ?? -1) : activeStickyIndices.length > 0 ? activeStickyIndices[activeStickyIndices.length - 1] : -1
 
-  const subheaderRows = rows
-    .map((row, index) => ({ row, index }))
-    .filter(({ row }) => (isSubheaderRow ? isSubheaderRow(row) : false))
-
-  const stickableSubheaders = subheaderRows.filter(({ row }) => (canSubheaderStick ? canSubheaderStick(row) : true))
-  const nativeStickySubheaderIds = findEnabled ? new Set(stickableSubheaders.map(({ row }) => row.id)) : new Set<string>()
+  // Native Find sticks the real rows with CSS, so the overlay lists are not needed and the rows are not scanned.
+  const stickableSubheaders = useMemo(
+    () =>
+      findEnabled
+        ? []
+        : rows
+            .map((row, index) => ({ row, index }))
+            .filter(({ row }) => (isSubheaderRow ? isSubheaderRow(row) : false))
+            .filter(({ row }) => (canSubheaderStick ? canSubheaderStick(row) : true)),
+    [findEnabled, rows, isSubheaderRow, canSubheaderStick],
+  )
   const candidateSubheaders = stickableSubheaders.filter(({ index }) => index * rowHeight <= scrollTop)
 
   const activeStickySubheader = candidateSubheaders.length > 0 ? candidateSubheaders[candidateSubheaders.length - 1] : null
@@ -392,9 +506,32 @@ export function VirtualGridTable<TData extends object>({
   const renderCells = (render: (index: number) => ReactNode): ReactNode[] =>
     renderIndices.flatMap((index, position) => (gapBefore(position) > 0 ? [<div key={`gap-${index}`} aria-hidden="true" />, render(index)] : [render(index)]))
   const gridTemplateColumns = `${edgeGutter}px ${leftPad}px ${renderedTracks.join(' ')} ${rightPad}px ${edgeGutter}px`
-
   const stickyStyle = (stickyLeft: number): CSSProperties =>
     ({ '--sticky-left': `${edgeGutter + stickyLeft}px` }) as CSSProperties
+
+  // The layout object keeps its identity while nothing about the columns changes, so a memoised row can skip its render.
+  const layoutKey = `${gridTemplateColumns}|${lastLeftStickyIndex}|${renderIndices.join(',')}`
+  const rowLayout = useMemo<RowLayout<TData>>(
+    () => ({
+      gridTemplateColumns,
+      cells: renderIndices.map((index, position) => {
+        const column = visibleColumns[index]
+        const meta = (column.columnDef.meta ?? {}) as ColumnMeta
+        return {
+          index,
+          gap: gapBefore(position) > 0,
+          column,
+          className: `${meta.numeric ? ' cell-numeric' : ''}${meta.sticky ? ' sticky-col' : ''}${
+            meta.sticky && index === lastLeftStickyIndex ? ' sticky-col-shadow-left' : ''
+          }`,
+          style: stickyStyle(stickyLeftById.get(column.id) ?? 0),
+          renderNativeCell: nativeCellRenderers[index],
+        }
+      }),
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [layoutKey, visibleColumns, columns],
+  )
 
   useEffect(() => {
     if (resolvedDisplayMode !== 'table' || autoScrollX === 'off' || hasAppliedInitialAutoScrollRef.current) {
@@ -492,11 +629,21 @@ export function VirtualGridTable<TData extends object>({
   }
 
   return (
-    <div className="table-wrap" ref={tableContainerRef}>
+    <div className="table-wrap" ref={tableContainerRef} data-vgt={instanceId}>
+      {highlightedResizeColumnId ? (
+        // One rule for the whole table: a hover or resize does not touch the class of any cell.
+        <style>{`[data-vgt="${cssString(instanceId)}"] [data-col="${cssString(highlightedResizeColumnId)}"] { box-shadow: inset -2px 0 0 #2f60d8; }`}</style>
+      ) : null}
       <div
         className={`table-inner${findEnabled ? ' native-find' : ''}`}
         ref={tableInnerRef}
-        style={{ width: `max(${totalColWidth + edgeGutter * 2}px, 100%)` }}
+        style={
+          {
+            width: `max(${totalColWidth + edgeGutter * 2}px, 100%)`,
+            '--vgt-row-height': `${rowHeight}px`,
+            '--vgt-header-height': `${rowHeight * table.getHeaderGroups().length}px`,
+          } as CSSProperties
+        }
       >
         {table.getHeaderGroups().map((headerGroup) => (
           <div
@@ -516,7 +663,6 @@ export function VirtualGridTable<TData extends object>({
               const numericClass = meta.numeric ? ' cell-numeric' : ''
               const stickyClass = meta.sticky ? ' sticky-col' : ''
               const leftShadowClass = meta.sticky && index === lastLeftStickyIndex ? ' sticky-col-shadow-left' : ''
-              const resizeHighlightClass = column.id === highlightedResizeColumnId ? ' col-resize-highlight' : ''
               const stickyLeft = stickyLeftById.get(column.id) ?? 0
 
               const sorted = header.column.getIsSorted()
@@ -529,7 +675,8 @@ export function VirtualGridTable<TData extends object>({
               return (
                 <div
                   key={header.id}
-                  className={`th${numericClass}${stickyClass}${leftShadowClass}${resizeHighlightClass}`}
+                  className={`th${numericClass}${stickyClass}${leftShadowClass}`}
+                  data-col={column.id}
                   title={String(column.columnDef.header)}
                   style={stickyStyle(stickyLeft)}
                 >
@@ -597,14 +744,14 @@ export function VirtualGridTable<TData extends object>({
                 const numericClass = meta.numeric ? ' cell-numeric' : ''
                 const stickyClass = meta.sticky ? ' sticky-col' : ''
                 const leftShadowClass = meta.sticky && index === lastLeftStickyIndex ? ' sticky-col-shadow-left' : ''
-                const resizeHighlightClass = column.id === highlightedResizeColumnId ? ' col-resize-highlight' : ''
                 const stickyLeft = stickyLeftById.get(column.id) ?? 0
 
                 if (!cell) {
                   return (
                     <div
                       key={`overlay-missing-${activeStickySubheaderRow.id}-${column.id}`}
-                      className={`td${numericClass}${stickyClass}${leftShadowClass}${resizeHighlightClass}`}
+                      className={`td${numericClass}${stickyClass}${leftShadowClass}`}
+                      data-col={column.id}
                       style={stickyStyle(stickyLeft)}
                       aria-hidden="true"
                     />
@@ -614,7 +761,8 @@ export function VirtualGridTable<TData extends object>({
                 return (
                   <div
                     key={`overlay-${cell.id}`}
-                    className={`td${numericClass}${stickyClass}${leftShadowClass}${resizeHighlightClass}`}
+                    className={`td${numericClass}${stickyClass}${leftShadowClass}`}
+                    data-col={column.id}
                     style={stickyStyle(stickyLeft)}
                   >
                     <span className="sticky-surface">{flexRender(cell.column.columnDef.cell, cell.getContext())}</span>
@@ -632,70 +780,21 @@ export function VirtualGridTable<TData extends object>({
 
         {rowIndices.map((rowIndex) => {
           const row = rows[rowIndex]
-          let cellsByColumnId: Map<string, Cell<TData, unknown>> | undefined
-
           const rowIsSubheader = isSubheaderRow ? isSubheaderRow(row) : false
-          const isNativeFindStickySubheader = rowIsSubheader && nativeStickySubheaderIds.has(row.id)
-          const isSourceUnderStickyOverlay =
-            showStickySubheaderOverlay && rowIsSubheader && row.id === activeStickySubheaderId
-
           return (
-            <div
+            <BodyRow<TData>
               key={row.id}
-              data-row={rowIndex}
-              className={`grid-row body-row${rowIsSubheader ? ' row-department' : ' row-user'}${
-                isNativeFindStickySubheader ? ' native-find-sticky-subheader' : ''
-              }${isSourceUnderStickyOverlay ? ' source-under-sticky-overlay' : ''
-              }${rowIndex === rows.length - 1 ? ' is-last-row' : ''}`}
-              style={{
-                gridTemplateColumns,
-                ...(findEnabled ? { contentVisibility: 'auto', containIntrinsicSize: `${rowHeight}px` } : {}),
-              }}
-            >
-              <div className="edge-col edge-start sticky-edge sticky-edge-start" aria-hidden="true" />
-              <div aria-hidden="true" />
-
-              {renderCells((index) => {
-                const column = visibleColumns[index]
-                const renderNativeCell = nativeCellRenderers[index]
-                if (!renderNativeCell) {
-                  cellsByColumnId ??= new Map(row.getVisibleCells().map((cell) => [cell.column.id, cell]))
-                }
-                const cell = renderNativeCell ? undefined : cellsByColumnId?.get(column.id)
-                const meta = (column.columnDef.meta ?? {}) as ColumnMeta
-                const numericClass = meta.numeric ? ' cell-numeric' : ''
-                const stickyClass = meta.sticky ? ' sticky-col' : ''
-                const leftShadowClass = meta.sticky && index === lastLeftStickyIndex ? ' sticky-col-shadow-left' : ''
-                const resizeHighlightClass = column.id === highlightedResizeColumnId ? ' col-resize-highlight' : ''
-                const stickyLeft = stickyLeftById.get(column.id) ?? 0
-
-                if (!cell && !renderNativeCell) {
-                  return (
-                    <div
-                      key={`missing-${row.id}-${column.id}`}
-                      className={`td${numericClass}${stickyClass}${leftShadowClass}${resizeHighlightClass}`}
-                      style={stickyStyle(stickyLeft)}
-                      aria-hidden="true"
-                    />
-                  )
-                }
-
-                return (
-                  <div
-                    key={cell?.id ?? `${row.id}_${column.id}`}
-                    className={`td${numericClass}${stickyClass}${leftShadowClass}${resizeHighlightClass}`}
-                    style={stickyStyle(stickyLeft)}
-                  >
-                    <span className="sticky-surface">
-                      {renderNativeCell ? renderNativeCell(row) : cell && flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </span>
-                  </div>
-                )
-              })}
-
-              <div aria-hidden="true" />
-              <div className="edge-col edge-end sticky-edge sticky-edge-end" aria-hidden="true" />
-            </div>
+              row={row}
+              rowIndex={rowIndex}
+              isLast={rowIndex === rows.length - 1}
+              isSubheader={rowIsSubheader}
+              nativeStickySubheader={findEnabled && rowIsSubheader && (canSubheaderStick ? canSubheaderStick(row) : true)}
+              underOverlay={showStickySubheaderOverlay && rowIsSubheader && row.id === activeStickySubheaderId}
+              isExpanded={row.getIsExpanded()}
+              findEnabled={findEnabled}
+              rowHeight={rowHeight}
+              layout={rowLayout}
+            />
           )
         })}
 

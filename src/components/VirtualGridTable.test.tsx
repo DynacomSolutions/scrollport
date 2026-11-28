@@ -174,4 +174,64 @@ describe('VirtualGridTable native Find DOM', () => {
     expect([...el.querySelectorAll('.body-row')].map((row) => row.querySelector('.td')?.textContent)).toEqual(['name3', 'name1'])
     expect(el.querySelectorAll('.native-find-index, [data-find-index], [inert]')).toHaveLength(0)
   })
+
+  describe('render cost of the native Find table', () => {
+    const ROWS = 2000
+    let cellRenders = 0
+    const counted: VirtualGridColumn<Person>[] = [
+      { accessorKey: 'name', header: 'Name', size: 200, renderNativeCell: (row) => { cellRenders++; return <span>{row.original.name}</span> } },
+      { accessorKey: 'city', header: 'City', size: 140, renderNativeCell: (row) => { cellRenders++; return <span>{row.original.city}</span> } },
+    ]
+    const hover = (node: Element, type: 'mouseover' | 'mouseout') =>
+      act(() => { node.dispatchEvent(new MouseEvent(type, { bubbles: true, relatedTarget: null })) })
+
+    it('does not render every row again for a resize-handle hover', () => {
+      cellRenders = 0
+      render(table(data(ROWS), true, { columns: counted }))
+      expect(el.querySelectorAll('.body-row')).toHaveLength(ROWS)
+      expect(cellRenders).toBe(ROWS * 2)
+      cellRenders = 0
+      const handle = el.querySelector('.resize-handle')!
+      hover(handle, 'mouseover')
+      expect(el.querySelector('style')?.textContent).toContain('data-col="name"')
+      hover(handle, 'mouseout')
+      expect(cellRenders).toBeLessThan(20)
+    })
+
+    it('marks the hovered column with one style rule and leaves cell classes alone', () => {
+      render(table(data(5), true, { columns: counted }))
+      const before = [...el.querySelectorAll('.td, .th')].map((node) => node.className).join('|')
+      hover(el.querySelector('.resize-handle')!, 'mouseover')
+      expect([...el.querySelectorAll('.td, .th')].map((node) => node.className).join('|')).toBe(before)
+      expect(el.querySelectorAll('.col-resize-highlight')).toHaveLength(0)
+      expect(el.querySelectorAll('style')).toHaveLength(1)
+    })
+
+    it('does not render every row again for a sort-handle hover', () => {
+      cellRenders = 0
+      render(table(data(ROWS), true, { columns: counted }))
+      cellRenders = 0
+      hover(el.querySelector('.header-sort-button')!, 'mouseover')
+      expect(cellRenders).toBeLessThan(20)
+    })
+  })
+
+  it('sets the header and sticky offsets from the row height and the header groups', () => {
+    render(table(data(3), true, { rowHeight: 36 }))
+    const inner = el.querySelector<HTMLElement>('.table-inner')!
+    expect(inner.style.getPropertyValue('--vgt-row-height')).toBe('36px')
+    expect(inner.style.getPropertyValue('--vgt-header-height')).toBe('36px')
+  })
+
+  it('shows the scrolled header state in native Find mode', () => {
+    render(table(data(20)))
+    const scroller = el.querySelector<HTMLElement>('.table-wrap')!
+    expect(el.querySelector('.header-row')!.classList.contains('is-vertically-sticky')).toBe(false)
+    scroller.scrollTop = 120
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(el.querySelector('.header-row')!.classList.contains('is-vertically-sticky')).toBe(true)
+    scroller.scrollTop = 0
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+    expect(el.querySelector('.header-row')!.classList.contains('is-vertically-sticky')).toBe(false)
+  })
 })
